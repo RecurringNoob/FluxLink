@@ -5,3 +5,10 @@ click
 flask
 cairosvg
 PyYAML
+uvicorn
+pydantic
+python-dotenv
+faiss-cpu
+cors
+fastapi
+openai
