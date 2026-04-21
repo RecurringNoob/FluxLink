@@ -1,21 +1,46 @@
-from flask import Flask, send_from_directory, render_template_string, jsonify
+"""
+Flask viewer server for FluxDiff.
+
+New endpoints added (existing endpoints unchanged):
+  GET /api/board/before   — serves before.svg for the React board viewer
+  GET /api/board/after    — serves after.svg for the React board viewer
+  GET /api/board/bounds   — serves board bounding box in mm + pixel constants
+
+/api/diff now includes structured findings (list[dict]) alongside the
+existing plain-string lists, so the React viewer can access coordinates
+and related_refs without changing the text report format.
+
+CORS headers are added for the Vite dev server (localhost:5173).
+"""
+
+from flask import Flask, send_from_directory, jsonify, send_file
+from flask_cors import CORS
 import os
 import webbrowser
 import threading
 
 app = Flask(__name__)
+CORS(app, resources={r"/api/*": {"origins": [
+    "http://localhost:5173",   # Vite dev server
+    "http://localhost:3000",   # CRA fallback
+]}})
 
 OUTPUT_DIR = os.path.abspath("output")
 
-ALL_IMAGE_FILENAMES = [
-    "before.png",
-    "after.png",
-    "diff_overlay.png",
-    "component_diff.png",
-]
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _findings_to_json(findings):
+    """Convert list[Finding] to list[dict] for JSON serialisation."""
+    return [f.to_dict() for f in findings]
 
 
-# ---------- API ----------
+# ---------------------------------------------------------------------------
+# Existing /api/diff — extended with structured findings
+# ---------------------------------------------------------------------------
+
 @app.route("/api/diff")
 def get_diff():
     diff_result = app.config.get("DIFF_RESULT")
@@ -23,6 +48,7 @@ def get_diff():
         return jsonify({"error": "No diff available"}), 404
 
     return jsonify({
+        # ---- existing plain-string lists (text report, unchanged) ----
         "components":        diff_result.component_changes,
         "nets":              diff_result.net_changes,
         "routing":           diff_result.routing_changes,
@@ -33,245 +59,123 @@ def get_diff():
         "impedance":         diff_result.impedance_changes,
         "bom":               diff_result.bom_changes,
         "summary":           diff_result.summary,
+
+        # ---- NEW: structured findings for the React viewer ----
+        "findings": {
+            "erc":       _findings_to_json(diff_result.erc_findings),
+            "power":     _findings_to_json(diff_result.power_tree_findings),
+            "diff_pair": _findings_to_json(diff_result.diff_pair_findings),
+            "ground":    _findings_to_json(diff_result.ground_findings),
+            "impedance": _findings_to_json(diff_result.impedance_findings),
+            "bom":       _findings_to_json(diff_result.bom_findings),
+        },
+
+        # ---- NEW: board bounds for coordinate mapping ----
+        "board_bounds": diff_result.board_bounds,
     })
 
 
-# ---------- UI ----------
-@app.route("/")
-def index():
-    available_images = [
-        f for f in ALL_IMAGE_FILENAMES
-        if os.path.isfile(os.path.join(OUTPUT_DIR, f))
-    ]
+# ---------------------------------------------------------------------------
+# NEW: board SVG endpoints
+# ---------------------------------------------------------------------------
 
-    html = """
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>FluxDiff Viewer</title>
-        <style>
-            * { box-sizing: border-box; }
-            body { font-family: Arial, sans-serif; margin: 0; background: #f4f6f8; }
-            .container { display: flex; height: 100vh; }
+@app.route("/api/board/before")
+def board_before():
+    """Serve the before-board SVG for the React viewer background layer."""
+    svg_path = os.path.join(OUTPUT_DIR, "before.svg")
+    if not os.path.isfile(svg_path):
+        return jsonify({"error": "before.svg not found — run pipeline first"}), 404
+    return send_file(svg_path, mimetype="image/svg+xml")
 
-            .images { width: 60%; padding: 20px; overflow-y: scroll; background: #f9f9f9; }
-            .img-block { margin-bottom: 20px; text-align: center; }
-            img { max-width: 100%; border: 1px solid #ccc; border-radius: 6px; }
 
-            .panel { width: 40%; padding: 20px; border-left: 2px solid #ddd; overflow-y: scroll; background: white; }
-            h2 { margin-top: 0; }
+@app.route("/api/board/after")
+def board_after():
+    """Serve the after-board SVG for the React viewer background layer."""
+    svg_path = os.path.join(OUTPUT_DIR, "after.svg")
+    if not os.path.isfile(svg_path):
+        return jsonify({"error": "after.svg not found — run pipeline first"}), 404
+    return send_file(svg_path, mimetype="image/svg+xml")
 
-            .summary-box {
-                background: #eef1f4; padding: 12px; border-radius: 8px;
-                margin-bottom: 16px; font-size: 13px; white-space: pre-wrap;
-                font-family: monospace;
-            }
-            .counts {
-                display: flex; flex-wrap: wrap; gap: 8px;
-                margin-bottom: 16px;
-            }
-            .count-chip {
-                background: #f0f0f0; border-radius: 12px;
-                padding: 4px 10px; font-size: 12px; font-weight: bold;
-            }
-            .count-chip.has-issues { background: #fff3cd; }
-            .count-chip.has-critical { background: #fde8e8; }
 
-            .section { margin-bottom: 20px; border: 1px solid #e8e8e8; border-radius: 8px; overflow: hidden; }
-            .section-header {
-                cursor: pointer; padding: 10px 14px;
-                background: #f8f9fa; font-weight: bold; font-size: 14px;
-                display: flex; justify-content: space-between; align-items: center;
-                user-select: none;
-            }
-            .section-header:hover { background: #e9ecef; }
-            .section-body { padding: 10px; display: none; }
-            .section-body.open { display: block; }
+@app.route("/api/board/diff-overlay")
+def board_diff_overlay():
+    """Serve the pixel diff PNG for the overlay view mode."""
+    png_path = os.path.join(OUTPUT_DIR, "diff_overlay.png")
+    if not os.path.isfile(png_path):
+        return jsonify({"error": "diff_overlay.png not found"}), 404
+    return send_file(png_path, mimetype="image/png")
 
-            .card { padding: 9px 12px; border-radius: 6px; margin-bottom: 6px; font-size: 13px; }
-            .card:hover { opacity: 0.85; }
-            .critical { background: #fde8e8; color: #c0392b; font-weight: bold; }
-            .warning  { background: #fff3cd; color: #856404; }
-            .info     { background: #e8f4e8; color: #276227; }
-            .neutral  { background: #f8f9fa; color: #333; }
 
-            .badge {
-                font-size: 11px; padding: 2px 7px; border-radius: 10px;
-                background: #6c63ff; color: white; margin-left: 8px;
-            }
-            .badge.warn  { background: #e67e22; }
-            .badge.crit  { background: #c0392b; }
-            .badge.ok    { background: #27ae60; }
-
-            .mono-block {
-                background: #f0f4f8; border-radius: 6px; padding: 10px;
-                font-family: monospace; font-size: 12px;
-                white-space: pre-wrap; border-left: 3px solid #6c63ff;
-                margin-top: 8px;
-            }
-        </style>
-    </head>
-    <body>
-    <div class="container">
-
-        <div class="images">
-            {% for filename in image_filenames %}
-            <div class="img-block">
-                <h3>{{ filename }}</h3>
-                <img src="/images/{{ filename }}" alt="{{ filename }}">
-            </div>
-            {% endfor %}
-        </div>
-
-        <div class="panel">
-            <h2>🔍 FluxDiff Report</h2>
-            <div class="summary-box" id="summaryBox">Loading…</div>
-            <div class="counts" id="counts"></div>
-
-            <!-- Sections rendered by JS -->
-            <div id="sections"></div>
-        </div>
-    </div>
-
-    <script>
-    function getClass(text) {
-        if (!text) return "neutral";
-        if (text.includes("CRITICAL")) return "critical";
-        if (text.includes("WARNING"))  return "warning";
-        if (text.includes("INFO"))     return "info";
-        return "neutral";
-    }
-
-    function badgeClass(items) {
-        if (!items || items.length === 0) return "ok";
-        if (items.some(i => i.includes("CRITICAL"))) return "crit";
-        if (items.some(i => i.includes("WARNING")))  return "warn";
-        return "";
-    }
-
-    function formatItem(text) {
-        if (text.includes("CRITICAL")) return "🔴 " + text;
-        if (text.includes("WARNING"))  return "🟡 " + text;
-        if (text.includes("INFO"))     return "🔵 " + text;
-        if (text.includes("Component moved"))         return "📍 " + text;
-        if (text.includes("Component value changed")) return "🔧 " + text;
-        if (text.includes("Trace added"))             return "➕ " + text;
-        if (text.includes("Trace removed"))           return "➖ " + text;
-        if (text.includes("Out of stock"))            return "🚫 " + text;
-        if (text.includes("Low stock"))               return "⚠️ " + text;
-        if (text.includes("In stock"))                return "✅ " + text;
-        return text;
-    }
-
-    function makeSection(emoji, title, items, extraHtml) {
-        const bc = badgeClass(items);
-        const count = items ? items.length : 0;
-        const id = "sec_" + title.replace(/\s+/g, "_");
-
-        let cards = "";
-        if (!items || items.length === 0) {
-            cards = `<div class="card info">No issues</div>`;
-        } else {
-            cards = items.map(i =>
-                `<div class="card ${getClass(i)}">${formatItem(i)}</div>`
-            ).join("");
-        }
-
-        return `
-        <div class="section">
-            <div class="section-header" onclick="toggleSection('${id}')">
-                <span>${emoji} ${title}</span>
-                <span class="badge ${bc}">${count}</span>
-            </div>
-            <div class="section-body" id="${id}">
-                ${cards}
-                ${extraHtml || ""}
-            </div>
-        </div>`;
-    }
-
-    function toggleSection(id) {
-        const el = document.getElementById(id);
-        el.classList.toggle("open");
-    }
-
-    function chipClass(items) {
-        if (!items || items.length === 0) return "";
-        if (items.some(i => i.includes("CRITICAL"))) return "has-critical";
-        return "has-issues";
-    }
-
-    fetch("/api/diff")
-        .then(r => { if (!r.ok) throw new Error("Diff not available"); return r.json(); })
-        .then(data => {
-            document.getElementById("summaryBox").innerText = data.summary || "No summary.";
-
-            // Count chips
-            const chips = [
-                ["🔧", "Components", data.components],
-                ["⚡", "Nets/ERC",   data.nets],
-                ["🛣",  "Routing",    data.routing],
-                ["🔋", "Power",      data.power_tree],
-                ["〰", "Diff Pairs", data.diff_pairs],
-                ["⏚",  "Grounding",  data.grounding],
-                ["Ω",  "Impedance",  data.impedance],
-                ["📦", "BOM",        data.bom],
-            ];
-            document.getElementById("counts").innerHTML = chips.map(([e, label, items]) =>
-                `<div class="count-chip ${chipClass(items)}">${e} ${label}: ${(items||[]).length}</div>`
-            ).join("");
-
-            // Power tree extra block
-            const ptExtra = data.power_tree_report
-                ? `<div style="margin-top:10px;"><strong style="font-size:12px;">Hierarchy (after board)</strong>
-                   <div class="mono-block">${data.power_tree_report}</div></div>`
-                : "";
-
-            // Build all sections
-            const sections = document.getElementById("sections");
-            sections.innerHTML = [
-                makeSection("🔧", "Component Changes", data.components),
-                makeSection("⚡", "Nets / ERC",        data.nets),
-                makeSection("🛣",  "Routing",           data.routing),
-                makeSection("🔋", "Power Tree",        data.power_tree, ptExtra),
-                makeSection("〰", "Differential Pairs",data.diff_pairs),
-                makeSection("⏚",  "Grounding",         data.grounding),
-                makeSection("Ω",  "Impedance",         data.impedance),
-                makeSection("📦", "Supply Chain / BOM",data.bom),
-            ].join("");
-
-            // Auto-open sections with issues
-            ["Component_Changes","Nets_/_ERC","Power_Tree","Differential_Pairs","Grounding","Impedance","Supply_Chain_/_BOM"]
-                .forEach(id => {
-                    const el = document.getElementById("sec_" + id);
-                    if (el) {
-                        const cards = el.querySelectorAll(".critical, .warning");
-                        if (cards.length > 0) el.classList.add("open");
-                    }
-                });
-        })
-        .catch(err => {
-            document.getElementById("summaryBox").innerText = "Error: " + err.message;
-        });
-    </script>
-    </body>
-    </html>
+@app.route("/api/board/bounds")
+def board_bounds():
     """
-    return render_template_string(html, image_filenames=available_images)
+    Serve the board bounding box in mm and the pixel-per-mm constants.
+
+    The React viewer uses this to map KiCad mm coordinates to overlay pixels:
+      pixel_x = (kicad_x - min_x) * px_per_mm
+      pixel_y = (kicad_y - min_y) * px_per_mm
+
+    px_per_mm here refers to the SVG's internal coordinate space, not screen
+    pixels — the SVG scales with the zoom container so the overlay div must
+    scale identically.  The viewer reads the SVG's viewBox at runtime and
+    derives the final scale factor from (viewBox_width / board_width_mm).
+    """
+    diff_result = app.config.get("DIFF_RESULT")
+    bounds = diff_result.board_bounds if diff_result else None
+    if not bounds:
+        return jsonify({"error": "Board bounds not available"}), 404
+    return jsonify(bounds)
 
 
-# ---------- IMAGE ROUTE ----------
+# ---------------------------------------------------------------------------
+# Existing image route (unchanged — still serves diff_overlay.png etc.)
+# ---------------------------------------------------------------------------
+
 @app.route("/images/<path:filename>")
 def images(filename):
     return send_from_directory(OUTPUT_DIR, filename)
 
 
-# ---------- SERVER ----------
+# ---------------------------------------------------------------------------
+# Root — in production, serve the Vite build; in dev, redirect to Vite
+# ---------------------------------------------------------------------------
+
+FRONTEND_BUILD = os.path.join(os.path.dirname(__file__), "frontend", "dist")
+
+
+@app.route("/", defaults={"path": ""})
+@app.route("/<path:path>")
+def serve_frontend(path):
+    """
+    Production: serve the Vite build from viewer/frontend/dist/.
+    Dev: the Vite dev server runs on :5173 and proxies /api → :5000,
+         so this route is only hit for non-API paths in production.
+    """
+    if os.path.isdir(FRONTEND_BUILD):
+        target = os.path.join(FRONTEND_BUILD, path)
+        if path and os.path.isfile(target):
+            return send_from_directory(FRONTEND_BUILD, path)
+        return send_from_directory(FRONTEND_BUILD, "index.html")
+    # Dev fallback — tell the user to open Vite instead
+    return (
+        "<h2>FluxDiff API running on :5000</h2>"
+        "<p>Open <a href='http://localhost:5173'>http://localhost:5173</a> "
+        "for the React viewer (Vite dev server).</p>",
+        200,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Server entry point
+# ---------------------------------------------------------------------------
+
 def run_viewer_server(diff_result=None, power_tree_report=""):
-    app.config["DIFF_RESULT"] = diff_result
-    app.config["POWER_TREE_REPORT"] = power_tree_report
-    threading.Timer(1, lambda: webbrowser.open("http://localhost:5000")).start()
-    app.run(host="localhost", port=5000)
+    app.config["DIFF_RESULT"]        = diff_result
+    app.config["POWER_TREE_REPORT"]  = power_tree_report
+    threading.Timer(
+        1, lambda: webbrowser.open("http://localhost:5173")
+    ).start()
+    app.run(host="localhost", port=5000, use_reloader=False)
 
 
 if __name__ == "__main__":
