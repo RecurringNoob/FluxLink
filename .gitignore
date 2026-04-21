@@ -7,7 +7,7 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
-
+*.bin
 # Virtual environment
 .env/
 .venv/
@@ -27,7 +27,7 @@ output/
 
 # VSCode settings (optional)
 .vscode/
-
+node_modules/
 # Python egg/packaging
 *.egg-info/
 dist/
