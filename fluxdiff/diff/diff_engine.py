@@ -51,7 +51,33 @@ def _compute_board_bounds(pcb: PCBData) -> dict:
         "max_y": max(ys) + margin,
     }
 
-
+def _extract_svg_bounds(svg_path: str) -> dict | None:
+    """
+    Parse the viewBox from the exported SVG to get exact board bounds in mm.
+    KiCad SVG exports use mm units in the viewBox.
+    Falls back to None if parsing fails.
+    """
+    try:
+        import xml.etree.ElementTree as ET
+        tree = ET.parse(svg_path)
+        root = tree.getroot()
+        # Handle namespaced SVG
+        vb = root.get("viewBox") or root.get("viewbox")
+        if not vb:
+            return None
+        parts = vb.replace(",", " ").split()
+        if len(parts) != 4:
+            return None
+        min_x, min_y, width, height = map(float, parts)
+        return {
+            "min_x": min_x,
+            "min_y": min_y,
+            "max_x": min_x + width,
+            "max_y": min_y + height,
+        }
+    except Exception as e:
+        print(f"[WARNING] Could not parse SVG viewBox: {e}")
+        return None
 # ---------------------------------------------------------------------------
 # _tag — works on set[Finding] (frozen dataclass → hashable)
 #
