@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>PCB Diff Viewer</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 900px;
+            margin: 30px auto;
+            background: #e5dfdf;
+            color: #222;
+        }
+        h1 {
+            text-align: center;
+            margin-bottom: 25px;
+        }
+        .controls {
+            display: flex;
+            justify-content: center;
+            gap: 15px;
+            margin-bottom: 25px;
+        }
+        .controls button {
+            padding: 8px 20px;
+            font-size: 1rem;
+            border: 1px solid #bbb;
+            background: #f8f8fb;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: background 0.18s;
+        }
+        .controls button.active {
+            background: #b3e9c7;
+            font-weight: bold;
+            border-color: #7dcfa0;
+        }
+        .grid-container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 22px;
+        }
+        .panel {
+            background: #fff;
+            border-radius: 7px;
+            box-shadow: 0 2px 8px #0001;
+            padding: 14px 10px 16px 10px;
+            text-align: center;
+        }
+        .panel h2 {
+            font-size: 1.1rem;
+            font-weight: 600;
+            margin-bottom: 11px;
+            letter-spacing: 0.5px;
+        }
+        .panel img {
+            max-width: 100%;
+            max-height: 340px;
+            border-radius: 4px;
+            border: 1px solid #ddd;
+            box-shadow: 0 1px 5px #0001;
+        }
+    </style>
+</head>
+<body>
+    <h1>PCB Diff Viewer</h1>
+    <div class="controls">
+        <button id="toggle-before" class="active">Before PCB</button>
+        <button id="toggle-after" class="active">After PCB</button>
+        <button id="toggle-diff" class="active">Visual Diff</button>
+        <button id="toggle-comp" class="active">Component Diff</button>
+    </div>
+    <div class="grid-container">
+        <div class="panel" id="panel-before">
+            <h2>Before PCB</h2>
+            <img src="/images/before.png" alt="Before PCB" id="img-before">
+        </div>
+        <div class="panel" id="panel-after">
+            <h2>After PCB</h2>
+            <img src="/images/after.png" alt="After PCB" id="img-after">
+        </div>
+        <div class="panel" id="panel-diff">
+            <h2>Visual Diff</h2>
+            <img src="/images/diff_overlay.png" alt="Visual Diff" id="img-diff">
+        </div>
+        <div class="panel" id="panel-comp">
+            <h2>Component Diff</h2>
+            <img src="/images/component_diff.png" alt="Component Diff" id="img-comp">
+        </div>
+    </div>
+    <script>
+        // Map of button IDs to panel IDs
+        const mappings = [
+            {button: "toggle-before", panel: "panel-before"},
+            {button: "toggle-after", panel: "panel-after"},
+            {button: "toggle-diff", panel: "panel-diff"},
+            {button: "toggle-comp", panel: "panel-comp"}
+        ];
+
+        mappings.forEach(({button, panel}) => {
+            const btn = document.getElementById(button);
+            const pnl = document.getElementById(panel);
+            btn.addEventListener('click', function() {
+                const visible = !pnl.style.display || pnl.style.display === "block" || pnl.style.display === "";
+                pnl.style.display = visible ? "none" : "block";
+                btn.classList.toggle("active", !visible);
+            });
+        });
+    </script>
+</body>
+</html>
