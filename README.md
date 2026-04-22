@@ -1,17 +1,18 @@
-# FluxDiff
+# FluxLink
 
-**Semantic diff tool for KiCad PCB files.**
+**Semantic PCB diff review with a natural-language chat interface.**
 
-FluxDiff compares two `.kicad_pcb` files and produces a textual diff report, visual PNG overlays, an optional local web viewer, and a RAG-powered chat interface for querying the git history of a KiCad repository in natural language.
+FluxLink combines two tools into one workflow: **FluxDiff** — a structured diff engine for KiCad `.kicad_pcb` files — and a **RAG-powered chat layer** that lets engineers query board changes in plain English. Review diffs visually in the interactive board viewer, then ask questions about what changed and why.
 
 ---
 
-## Features
+## What's Inside
 
-- **Semantic diff** — components, nets, routing, ERC, power tree, differential pairs, grounding, impedance, and BOM
-- **Visual overlays** — pixel-level before/after diff and annotated component change markers
-- **Local web viewer** — Flask backend + React/Vite frontend with an interactive board view and sidebar findings
-- **RAG chat layer** — ingests git history, embeds diff summaries into a FAISS vector store, and answers natural-language questions via OpenAI
+| Layer | What it does |
+|---|---|
+| **FluxDiff** | Compares two KiCad board files semantically — components, nets, routing, ERC, power tree, differential pairs, grounding, impedance, and BOM |
+| **Board Viewer** | Flask + React/Vite frontend: side-by-side / toggle / overlay view with interactive findings markers |
+| **FluxLink Chat** | RAG pipeline over git history — embeds diff summaries into a FAISS vector store, answers natural-language questions via OpenAI with cited sources |
 
 ---
 
@@ -20,14 +21,14 @@ FluxDiff compares two `.kicad_pcb` files and produces a textual diff report, vis
 **System requirement:** KiCad must be installed and `kicad-cli` must be on your `PATH`.
 
 ```bash
-pip install fluxdiff
+pip install fluxlink
 ```
 
 Or from source:
 
 ```bash
-git clone https://github.com/your-org/fluxdiff.git
-cd fluxdiff
+git clone https://github.com/your-org/fluxlink.git
+cd fluxlink
 pip install -e .
 ```
 
@@ -36,44 +37,147 @@ pip install -e .
 | Package | Purpose |
 |---|---|
 | `pyyaml` | Stackup config in YAML format (falls back to JSON if absent) |
-| `faiss-cpu` | Required for the RAG sub-system |
-| `openai` | Required for RAG embeddings and chat completions |
+| `faiss-cpu` | Required for the chat / RAG sub-system |
+| `openai` | Required for embeddings and chat completions |
 
 ---
 
 ## Quick Start
 
+### Diff two board files
+
 ```bash
-# Basic diff — prints report to stdout and writes output/ directory
-fluxdiff before.kicad_pcb after.kicad_pcb
+# Print report to stdout, write output/ directory
+fluxlink before.kicad_pcb after.kicad_pcb
 
-# With impedance analysis using a stackup config
-fluxdiff before.kicad_pcb after.kicad_pcb --stackup stackup.yaml
+# With impedance analysis
+fluxlink before.kicad_pcb after.kicad_pcb --stackup stackup.yaml
 
-# Launch the interactive web viewer after diffing
-fluxdiff before.kicad_pcb after.kicad_pcb --viewer
+# Open the interactive board viewer after diffing
+fluxlink before.kicad_pcb after.kicad_pcb --viewer
 ```
 
-The web viewer runs on `http://localhost:5000`. When the Vite dev server is running on port 5173 the viewer redirects there automatically.
+The board viewer runs at `http://localhost:5000`. When the Vite dev server is running on port 5173, the viewer redirects there automatically.
+
+### Ask questions about board history
+
+```bash
+# 1. Set credentials
+export FLUXDIFF_REPO_PATH=/path/to/kicad/repo
+export OPENAI_API_KEY=sk-...
+
+# 2. Ingest git history into the vector store
+python -m fluxlink.rag.ingest.run_ingest --max-commits 50
+
+# 3. Start the chat API
+uvicorn fluxlink.rag.api:app --host 0.0.0.0 --port 8000 --reload
+
+# 4. Open the chat UI at /chat in the board viewer
+```
 
 ---
 
-## Output
+## Output Files
 
-All files are written to `output/` relative to the working directory.
+All files are written to `output/` in the working directory.
 
 | File | Description |
 |---|---|
-| `output/diff_report.txt` | Full text report |
+| `output/diff_report.txt` | Full text diff report |
 | `output/before.svg` / `output/after.svg` | Board SVGs (viewer backgrounds) |
 | `output/diff_overlay.png` | Pixel-level red/green diff image |
 | `output/component_diff.png` | Annotated component change markers |
 
 ---
 
+## Board Viewer
+
+The viewer is a React/Vite frontend served by Flask. Three view modes:
+
+- **Side by side** — before and after boards rendered simultaneously, findings markers on the after board
+- **Toggle** — flip between before and after with a single key
+- **Overlay** — pixel-level diff image
+
+The **findings sidebar** lists all issues grouped by category (ERC, POWER, DIFF_PAIR, GROUND, IMPEDANCE, BOM, COMPONENT) with severity badges (CRITICAL / WARNING / INFO), free-text search, and severity filtering. Clicking any finding or component change pans and zooms the board to that location.
+
+**Keyboard shortcuts:**
+
+| Key | Action |
+|---|---|
+| `j` / `↓` | Next finding |
+| `k` / `↑` | Previous finding |
+| `Escape` | Clear selection |
+
+---
+
+## Chat Interface
+
+The `/chat` route opens FluxLink Chat — a full-page conversational UI backed by the RAG API.
+
+Ask questions like:
+
+- *"What changed in the last commit?"*
+- *"Are there any impedance issues on the USB traces?"*
+- *"Which components were moved between rev A and rev B?"*
+- *"Show me all CRITICAL findings across the last 10 commits."*
+
+Every answer cites the specific commit ID and file it was sourced from. A collapsible sources panel appears below each assistant message.
+
+### Chat API
+
+```
+POST /chat
+Body:    { "query": "What changed in the last commit?" }
+Returns: { "answer": "...", "sources": [{ "commit_id": "a1b2c3d", "file_name": "board/main.kicad_pcb" }] }
+```
+
+#### Filtered retrieval
+
+Restrict retrieval to a specific commit, document type, or file:
+
+```json
+POST /chat/filtered
+{
+  "query": "Are there impedance issues?",
+  "filters": {
+    "commit": "a1b2c3d4e5f6",
+    "type": "impedance",
+    "file": "board/main.kicad_pcb"
+  }
+}
+```
+
+All filter keys are optional. Supported document types: `summary`, `component`, `net`, `routing`, `power_tree`, `diff_pair`, `grounding`, `impedance`, `bom`, `repo_file`.
+
+#### Health check
+
+```
+GET /health
+→ { "status": "ok", "documents_indexed": 142 }
+```
+
+---
+
+## Ingestion
+
+```bash
+# Index the last 50 commits
+python -m fluxlink.rag.ingest.run_ingest --max-commits 50
+
+# Re-index from scratch
+python -m fluxlink.rag.ingest.run_ingest --max-commits 50 --clear
+
+# Include impedance analysis during ingestion
+python -m fluxlink.rag.ingest.run_ingest --stackup stackup.yaml
+```
+
+Ingestion is idempotent — documents are deduplicated by SHA-256 content hash. Running it twice produces the same index.
+
+---
+
 ## Stackup Configuration
 
-Impedance analysis uses a per-layer stackup config. If no config is provided, a default microstrip layer (0.2 mm dielectric, εr = 4.5, 35 µm copper) is assumed.
+Impedance analysis uses a per-layer stackup config. If omitted, a default microstrip layer is assumed (0.2 mm dielectric, εr = 4.5, 35 µm copper).
 
 ```yaml
 # stackup.yaml
@@ -90,126 +194,61 @@ layers:
     copper_thickness: 0.035
 ```
 
-Pass the file with `--stackup stackup.yaml`. Both YAML and JSON formats are accepted.
+Pass with `--stackup stackup.yaml`. Both YAML and JSON are accepted.
 
 ---
 
-## RAG Chat Sub-System
+## Analysis Modules
 
-The RAG layer ingests a KiCad repository's git history and exposes a chat API for natural-language queries about board changes.
+### ERC
+Power shorts, missing pull-ups on I2C/open-drain nets, missing bypass caps within 5 mm of IC power pins, under-connected power nets, and floating nets.
 
-### Setup
+### Power Tree
+Classifies regulators, connectors, batteries, and IC loads into a rail graph. Reports rail contention (CRITICAL), unused regulator outputs (WARNING), and sourceless rails (WARNING).
 
-```bash
-# Required environment variables
-export FLUXDIFF_REPO_PATH=/path/to/kicad/repo
-export OPENAI_API_KEY=sk-...
+### Differential Pairs
+Detects paired nets by suffix (`_P`/`_N`, `+`/`−`, `_DP`/`_DN`, etc.). Checks length mismatch > 0.5 mm, via count asymmetry, and layer asymmetry per pair.
 
-# Optional overrides
-export FLUXDIFF_EMBEDDING_MODEL=text-embedding-3-small
-export FLUXDIFF_LLM_MODEL=gpt-4o-mini
-export FLUXDIFF_TOP_K=5
-export FLUXDIFF_MEMORY_WINDOW=5
-export FLUXDIFF_VECTOR_DB_PATH=./rag_db
-```
+### Grounding
+GND island detection, analog/digital IC mix on a shared GND net, and ADC components without a GND reference within 10 mm.
 
-### Ingestion
+### Impedance
+Microstrip and stripline impedance from trace width and stackup config, compared against targets for critical net types (USB, RF, LVDS, HDMI, Ethernet, MIPI, PCIe).
 
-```bash
-# Ingest the last 50 commits
-python -m fluxdiff.rag.ingest.run_ingest --max-commits 50
+### BOM / Supply Chain
+Groups components by `(value, footprint)`, queries the ERP adapter, and reports out-of-stock (CRITICAL), low-stock (WARNING), or sufficient-stock (INFO). Swap `erp_service.fetch_inventory_from_erp()` with any real ERP client without touching other modules.
 
-# Re-index from scratch
-python -m fluxdiff.rag.ingest.run_ingest --max-commits 50 --clear
+---
 
-# Include impedance analysis during ingestion
-python -m fluxdiff.rag.ingest.run_ingest --stackup stackup.yaml
-```
+## Configuration
 
-Ingestion is idempotent — documents are deduplicated by SHA-256 content hash, so running it twice produces the same index.
+| Variable | Default | Purpose |
+|---|---|---|
+| `FLUXDIFF_REPO_PATH` | *(required)* | Path to the KiCad git repository |
+| `OPENAI_API_KEY` | *(required)* | OpenAI API key |
+| `FLUXDIFF_EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model |
+| `FLUXDIFF_LLM_MODEL` | `gpt-4o-mini` | Chat completion model |
+| `FLUXDIFF_TOP_K` | `5` | Documents retrieved per query |
+| `FLUXDIFF_MEMORY_WINDOW` | `5` | Conversation turns kept in context |
+| `FLUXDIFF_VECTOR_DB_PATH` | `./rag_db` | FAISS index storage path |
+| `FLUXDIFF_CORS_ORIGINS` | `localhost:5173,3000,5000` | Allowed CORS origins (comma-separated) |
 
-### Chat API
+---
 
-```bash
-uvicorn fluxdiff.rag.api:app --host 0.0.0.0 --port 8000 --reload
-```
+## Ports
 
-The API runs on port 8000. CORS origins are configurable via `FLUXDIFF_CORS_ORIGINS` (comma-separated; defaults to `localhost:5173,3000,5000`).
-
-#### `POST /chat`
-
-```json
-{ "query": "What changed in the last commit?" }
-```
-
-```json
-{
-  "answer": "In the most recent commit...",
-  "sources": [
-    { "type": "summary", "commit": "a1b2c3d...", "file": "board/main.kicad_pcb" }
-  ]
-}
-```
-
-#### `POST /chat/filtered`
-
-Restrict retrieval to a specific commit, document type, or file:
-
-```json
-{
-  "query": "Are there any impedance issues?",
-  "filters": {
-    "commit": "a1b2c3d4e5f6...",
-    "type": "impedance",
-    "file": "board/main.kicad_pcb"
-  }
-}
-```
-
-All filter keys are optional. Document types: `summary`, `component`, `net`, `routing`, `power_tree`, `diff_pair`, `grounding`, `impedance`, `bom`, `repo_file`.
-
-#### `GET /health`
-
-```json
-{ "status": "ok", "documents_indexed": 142 }
-```
+| Service | Port | Purpose |
+|---|---|---|
+| Flask board viewer | 5000 | `/api/diff`, `/api/board/*`, serves the React SPA |
+| FastAPI RAG chat | 8000 | `/chat`, `/chat/filtered`, `/health` |
+| Vite dev server | 5173 | Frontend HMR (proxies `/api` to Flask) |
 
 ---
 
 ## Architecture
 
-### Core Pipeline
-
 ```
-Parse → Enrich → Analyse → Diff → Report / Visualise
-```
-
-1. **Parse** — S-expression tokenizer builds an AST; `pcb_parser` converts it to typed domain objects (`PCBData`, `Component`, `Net`, `Trace`, `Via`, `Pad`).
-2. **Enrich** — Traces are snapped to their nearest pads by net within a 2 mm tolerance.
-3. **Graph build** — A connectivity graph maps each net to the set of `(ref, pad_number)` tuples connected to it.
-4. **Diff** — `compare_pcbs()` runs all analysis modules and collects `Finding` objects and plain-string change lists into a `DiffResult`.
-5. **Report / Visualise** — Text report is printed and written; SVGs and PNGs are exported; the viewer is optionally launched.
-
-### RAG Pipeline
-
-```
-Git history → FluxDiff core → Documents → Embeddings → FAISS → Retriever → LLM → FastAPI
-```
-
-### Ports
-
-| Service | Port | Purpose |
-|---|---|---|
-| Flask board viewer | 5000 | `/api/diff`, `/api/board/*` |
-| FastAPI RAG chat | 8000 | `/chat`, `/chat/filtered`, `/health` |
-| React/Vite dev server | 5173 | Frontend (proxies `/api` to Flask) |
-
----
-
-## Project Structure
-
-```
-fluxdiff/
+fluxlink/
 ├── cli/main.py                  # Entry point — orchestrates the full pipeline
 ├── parser/
 │   ├── sexp_parser.py           # S-expression tokenizer and AST builder
@@ -217,98 +256,56 @@ fluxdiff/
 ├── models/pcb_models.py         # Dataclasses: Pad, Component, Net, Trace, Via, Finding, DiffResult
 ├── diff/diff_engine.py          # compare_pcbs() — master diff orchestrator
 ├── analysis/
-│   ├── connectivity_graph.py    # Net connectivity graph build and comparison
-│   ├── trace_connectivity.py    # Trace-to-pad snapping (enrich phase)
-│   ├── geometry.py              # Pad index, nearest-pad lookup, distance helpers
-│   ├── erc_checker.py           # ERC checks (pull-ups, bypass caps, floating nets, power shorts)
-│   ├── power_tree.py            # Power rail analysis and tree report
-│   ├── diff_pair.py             # Differential pair length, via, and layer asymmetry checks
-│   ├── ground_checker.py        # GND island detection, analog/digital mix, ADC proximity
-│   └── impedance.py             # Trace impedance vs. target; microstrip and stripline models
+│   ├── connectivity_graph.py
+│   ├── trace_connectivity.py
+│   ├── geometry.py
+│   ├── erc_checker.py
+│   ├── power_tree.py
+│   ├── diff_pair.py
+│   ├── ground_checker.py
+│   └── impedance.py
 ├── supply_chain/
-│   ├── bom_checker.py           # BOM build and ERP stock lookup
+│   ├── bom_checker.py
 │   └── erp_service.py           # Swappable ERP adapter stub
 ├── visual/
-│   ├── constants.py             # EXPORT_SCALE, PIXELS_PER_MM
 │   ├── kicad_export.py          # kicad-cli → SVG/PNG export
 │   ├── image_diff.py            # Pixel-level before/after overlay
 │   └── component_diff.py        # Component marker and arrow overlay
 ├── viewer/server.py             # Flask API and SPA server
 └── rag/
     ├── config.py                # All RAG tunables (env-driven)
-    ├── schemas.py               # RAG dataclasses
     ├── api.py                   # FastAPI app
-    ├── ingest/                  # Git loader, diff generator, document builder, ingestion entry point
+    ├── ingest/                  # Git loader, diff generator, document builder
     ├── embedding/               # OpenAI embedder, FAISS vector store
-    ├── retrieval/retriever.py   # Embed query → similarity search → optional metadata filter
+    ├── retrieval/retriever.py   # Query embedding → similarity search → metadata filter
     ├── llm/                     # LLM client, prompt templates
     └── chat/                    # ChatEngine, ChatMemory (rolling window)
 ```
 
 ---
 
-## Analysis Modules
-
-### ERC (`erc_checker.py`)
-
-Checks power shorts, missing pull-ups on I2C/open-drain nets, missing bypass caps on IC power pins, under-connected power nets, and floating nets. Returns `list[Finding]` sorted CRITICAL → WARNING → INFO.
-
-Key tunables:
-- `BYPASS_CAP_RADIUS_MM = 5.0` — maximum distance from IC power pin to a bypass cap
-- `I2C_NET_SUBSTRINGS = ("SDA", "SCL")`
-- `OPEN_DRAIN_NET_SUBSTRINGS = ("OD", "INT", "ALERT", "NRST", "RESET", ...)`
-
-### Power Tree (`power_tree.py`)
-
-Classifies components as regulators, connectors, batteries, or IC loads, then builds a rail graph. Reports rail contention (CRITICAL), unused regulator outputs (WARNING), sourceless rails (WARNING), and high load counts (INFO).
-
-### Differential Pairs (`diff_pair.py`)
-
-Detects paired nets by suffix (`_P`/`_N`, `_DP`/`_DN`, `+`/`-`, `_POS`/`_NEG`, `P`/`N`). Checks per pair:
-- Length mismatch > 0.5 mm → WARNING
-- Via count asymmetry → WARNING / INFO
-- Layer asymmetry → WARNING
-
-### Grounding (`ground_checker.py`)
-
-Three checks: GND island detection (CRITICAL if unbridged), analog/digital IC mix on the same GND net (WARNING), and ADC components without a GND reference within 10 mm (WARNING).
-
-### Impedance (`impedance.py`)
-
-Computes microstrip and stripline impedance from trace width and stackup config. Compares against target impedance for critical nets (USB, RF, LVDS, HDMI, Ethernet, MIPI, PCIe). Severity scales with deviation from target tolerance.
-
-### BOM / Supply Chain (`bom_checker.py`)
-
-Groups components by `(value, footprint)`, queries the ERP adapter, and reports out-of-stock (CRITICAL), low-stock (WARNING), or sufficient-stock (INFO) findings. Swap `erp_service.fetch_inventory_from_erp()` with a real ERP client (SAP, NetSuite, REST) without touching any other module.
-
----
-
-## Extending FluxDiff
+## Extending FluxLink
 
 ### Adding a new analysis module
 
-1. Implement `analyse_X(pcb: PCBData, ...) -> list[Finding]` with deduplication and severity sort.
+1. Implement `analyse_X(pcb: PCBData, ...) -> list[Finding]`.
 2. Add `X_changes: List[str]` and `X_findings: List[Finding]` to `DiffResult` in `pcb_models.py`.
-3. Call it in `compare_pcbs()` via `_tag(set(X_old), set(X_new), result.X_changes, result.X_findings)`.
-4. Add a section to `_print_report()` / `_write_report()` in `main.py`.
-5. Add the findings key to `/api/diff` in `server.py`.
-6. Add the new field to `DiffSummary` in `rag/schemas.py` and map it in `DiffGenerator` and `DocumentBuilder`.
+3. Call it in `compare_pcbs()` in `diff_engine.py`.
+4. Add a section to the report writer in `cli/main.py`.
+5. Expose the new findings key in `/api/diff` in `viewer/server.py`.
+6. Map it in `DiffSummary`, `DiffGenerator`, and `DocumentBuilder` under `rag/`.
 
 ### Swapping the vector store
-
-Replace `VectorStore` in `rag/embedding/vector_store.py`. Keep the same interface: `add_documents(docs, embeddings)`, `similarity_search(vec, top_k)`, `clear()`. `Retriever` and `ChatEngine` need no changes.
+Replace `VectorStore` in `rag/embedding/vector_store.py`. Keep the interface: `add_documents()`, `similarity_search()`, `clear()`.
 
 ### Swapping the LLM
-
-Replace the body of `LLMClient.generate_response(prompt: str) -> str` in `rag/llm/llm_client.py`. Update `RAG_CONFIG["llm_model"]`. `ChatEngine` needs no changes.
+Replace `LLMClient.generate_response(prompt: str) -> str` in `rag/llm/llm_client.py`. Update `FLUXDIFF_LLM_MODEL`.
 
 ### Swapping the embedding model
-
-Replace `Embedder.embed_documents()` and `embed_query()` in `rag/embedding/embedder.py`. Keep return types `List[List[float]]` and `List[float]`. If the embedding dimension changes, run `--clear` before re-ingesting — the FAISS index dimension is fixed at creation time.
+Replace `Embedder.embed_documents()` and `embed_query()` in `rag/embedding/embedder.py`. If the embedding dimension changes, run `--clear` before re-ingesting — the FAISS index dimension is fixed at creation time.
 
 ### Persisting chat memory across restarts
-
-Replace `ChatMemory` in `rag/chat/memory.py` with a Redis- or DB-backed implementation. Keep the interface: `add(user, assistant)`, `get_context() -> str`, `clear()`. `ChatEngine` needs no changes.
+Replace `ChatMemory` in `rag/chat/memory.py` with a Redis- or DB-backed implementation. Keep the interface: `add(user, assistant)`, `get_context() -> str`, `clear()`.
 
 ---
 
@@ -317,12 +314,12 @@ Replace `ChatMemory` in `rag/chat/memory.py` with a Redis- or DB-backed implemen
 | Package | Purpose |
 |---|---|
 | `click` | CLI argument parsing |
-| `flask` + `flask-cors` | Web viewer API |
+| `flask` + `flask-cors` | Board viewer API |
 | `fastapi` + `uvicorn` + `pydantic` | RAG chat API |
 | `openai` | Embeddings and chat completions |
 | `faiss-cpu` | Vector similarity search |
 | `numpy` | Array operations |
-| `opencv-python` (`cv2`) | Image processing |
+| `opencv-python` | Image processing |
 | `cairosvg` | SVG → PNG conversion |
 | `python-dotenv` | `.env` file loading |
 | `pyyaml` *(optional)* | YAML stackup config |
