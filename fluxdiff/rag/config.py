@@ -13,11 +13,9 @@ RAG_CONFIG = {
     # =========================
     "repo_path": os.getenv("FLUXDIFF_REPO_PATH", os.getcwd()),
 
-    # =========================
-    # EMBEDDING SETTINGS
-    # Requires OPENAI_API_KEY in environment.
-    # =========================
-    "embedding_model": os.getenv("FLUXDIFF_EMBEDDING_MODEL", "text-embedding-3-small"),
+    # Provider and model settings (FLUXDIFF_LLM_PROVIDER, FLUXDIFF_LLM_MODEL,
+    # FLUXDIFF_EMBEDDING_PROVIDER, FLUXDIFF_EMBEDDING_MODEL) are resolved in
+    # rag/providers.py when a client is created.
 
     # =========================
     # VECTOR DB SETTINGS
@@ -32,11 +30,6 @@ RAG_CONFIG = {
     # RETRIEVAL SETTINGS
     # =========================
     "top_k": int(os.getenv("FLUXDIFF_TOP_K", "5")),
-
-    # =========================
-    # LLM SETTINGS
-    # =========================
-    "llm_model": os.getenv("FLUXDIFF_LLM_MODEL", "gpt-4o-mini"),
 
     # =========================
     # CHAT MEMORY

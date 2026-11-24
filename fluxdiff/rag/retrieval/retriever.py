@@ -20,6 +20,9 @@ class Retriever:
         Retrieval with optional metadata filters (commit / type / file).
         Filters are applied inside the vector search, before the top-k cut.
         """
+        # Refuse before spending an API call if the index was built with
+        # another embedding model (raises EmbeddingMismatch).
+        self.store.check_embedding(getattr(self.embedder, "signature", None))
         embedding = self.embedder.embed_query(rag_query.query)
         documents = self.store.similarity_search(
             embedding, top_k=RAG_CONFIG["top_k"], filters=rag_query.filters,

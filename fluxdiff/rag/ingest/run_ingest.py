@@ -15,13 +15,14 @@ parent, one board file at a time.  (Previously every pair of neighbouring
 `git log` entries was diffed for every board, which re-parsed unchanged
 boards and, across merges, compared commits that are not parent and child.)
 
-Environment variables (see config.py):
+Environment variables (see config.py and providers.py):
     FLUXDIFF_REPO_PATH       — path to the KiCad git repository
     FLUXDIFF_GITHUB_REPO     — owner/repo on GitHub; read over the API instead
                                of a local clone (same as --github)
     GITHUB_TOKEN             — optional; private repos / higher API rate limit
     FLUXDIFF_VECTOR_DB_PATH  — override storage location
-    OPENAI_API_KEY           — required for embeddings
+    FLUXDIFF_LLM_PROVIDER    — openai | gemini (default: picked from the API key present)
+    OPENAI_API_KEY / GEMINI_API_KEY — key for the embedding provider
 """
 
 import argparse
@@ -142,7 +143,13 @@ def run_ingestion(
         from fluxdiff.rag.embedding.vector_store import VectorStore
         store = VectorStore()
 
+    signature = getattr(embedder, "signature", None)
     if clear_first:
+        store.clear()
+    elif store.documents and signature and store.embedding != signature:
+        # Vectors from different embedding models cannot share an index.
+        log(f"Embedding model changed ({store.embedding or 'unrecorded'} → {signature}); "
+            f"rebuilding the index.")
         store.clear()
 
     builder  = DocumentBuilder()
@@ -152,7 +159,7 @@ def run_ingestion(
         log("Indexing repo text files...")
         all_docs.extend(collect_repo_file_documents(repo_path, log=log))
 
-    all_docs = chunk_documents(all_docs)
+    all_docs = chunk_documents(all_docs, max_chars=getattr(embedder, "max_input_chars", 16_000))
     # Embed only what the store does not already hold, so re-running
     # ingestion costs nothing for unchanged history.
     new_docs = [d for d in all_docs if not store.has_document(d)]
@@ -171,7 +178,7 @@ def run_ingestion(
     embeddings = embedder.embed_documents(new_docs)
 
     log("Storing in vector DB...")
-    store.add_documents(new_docs, embeddings)
+    store.add_documents(new_docs, embeddings, embedding=signature)
     log("Ingestion complete.")
     return len(new_docs)
 

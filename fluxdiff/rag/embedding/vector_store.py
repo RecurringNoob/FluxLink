@@ -14,6 +14,7 @@ FAISS-backed vector store.
 """
 
 import hashlib
+import json
 import os
 import pickle
 import threading
@@ -24,6 +25,10 @@ import numpy as np
 
 from fluxdiff.rag.config import RAG_CONFIG
 from fluxdiff.rag.schemas import RAGDocument
+
+class EmbeddingMismatch(RuntimeError):
+    """The index was built with a different embedding model than the query uses."""
+
 
 # Filter keys understood by similarity_search().
 FILTER_KEYS = ("commit", "type", "file")
@@ -59,10 +64,14 @@ class VectorStore:
         self._seen_hashes: set = set()
         self._loaded_mtime = None
         self._lock = threading.RLock()
+        # "provider:model" of the embeddings in this index (None for indexes
+        # built before this was recorded).
+        self.embedding: Optional[str] = None
 
         os.makedirs(self.db_path, exist_ok=True)
         self.index_file = os.path.join(self.db_path, "faiss.index")
         self.doc_file   = os.path.join(self.db_path, "documents.pkl")
+        self.meta_file  = os.path.join(self.db_path, "index_meta.json")
 
         self._load()
 
@@ -86,9 +95,25 @@ class VectorStore:
     # Add documents
     # ------------------------------------------------------------------
 
-    def add_documents(self, documents: List[RAGDocument], embeddings: List[List[float]]):
+    def check_embedding(self, signature: Optional[str], dim: Optional[int] = None):
+        """Raise EmbeddingMismatch if this index was built with another model."""
+        self.reload_if_changed()
+        if not self.documents:
+            return
+        if signature and self.embedding and signature != self.embedding:
+            raise EmbeddingMismatch(
+                f"This index was built with {self.embedding}, but the server now uses "
+                f"{signature}. Re-index the repository (or switch the embedding model back).")
+        if dim and self.index is not None and self.index.d != dim:
+            raise EmbeddingMismatch(
+                f"This index has {self.index.d}-dimensional embeddings, but the current "
+                f"model ({signature or 'unknown'}) produces {dim}. Re-index the repository.")
+
+    def add_documents(self, documents: List[RAGDocument], embeddings: List[List[float]],
+                      embedding: Optional[str] = None):
         if not embeddings:
             return
+        self.check_embedding(embedding, len(embeddings[0]))
         with self._lock:
             new_docs, new_vecs = [], []
             for doc, vec in zip(documents, embeddings):
@@ -113,6 +138,8 @@ class VectorStore:
 
             self.index.add(vectors)
             self.documents.extend(new_docs)
+            if embedding:
+                self.embedding = embedding
             self._save()
             print(f"[VectorStore] Added {len(new_docs)} documents "
                   f"({len(documents) - len(new_docs)} duplicates skipped).")
@@ -137,6 +164,11 @@ class VectorStore:
             # With filters, rank every document and keep the best matching
             # ones.  IndexFlatL2 is exhaustive anyway, so this costs no more
             # than the unfiltered search for the index sizes FluxLink produces.
+            if self.index.d != len(query_embedding):
+                raise EmbeddingMismatch(
+                    f"This index has {self.index.d}-dimensional embeddings but the query has "
+                    f"{len(query_embedding)}; it was built with another embedding model. "
+                    f"Re-index the repository.")
             k = self.index.ntotal if active else min(top_k, self.index.ntotal)
             query_vector = np.array([query_embedding], dtype="float32")
             _, indices = self.index.search(query_vector, k)
@@ -163,7 +195,8 @@ class VectorStore:
             self.index = None
             self.documents = []
             self._seen_hashes = set()
-            for path in (self.index_file, self.doc_file):
+            self.embedding = None
+            for path in (self.index_file, self.doc_file, self.meta_file):
                 try:
                     os.remove(path)
                 except FileNotFoundError:
@@ -191,12 +224,20 @@ class VectorStore:
     def _save(self):
         if self.index is not None:
             faiss.write_index(self.index, self.index_file)
+        with open(self.meta_file, "w", encoding="utf-8") as f:
+            json.dump({"embedding": self.embedding,
+                       "dimension": self.index.d if self.index is not None else None}, f)
         with open(self.doc_file, "wb") as f:
             pickle.dump(self.documents, f)
         self._loaded_mtime = self._disk_mtime()
 
     def _load(self):
-        self.index, self.documents = None, []
+        self.index, self.documents, self.embedding = None, [], None
+        try:
+            with open(self.meta_file, "r", encoding="utf-8") as f:
+                self.embedding = json.load(f).get("embedding")
+        except (OSError, ValueError, AttributeError):
+            pass
         if os.path.exists(self.index_file):
             try:
                 self.index = faiss.read_index(self.index_file)

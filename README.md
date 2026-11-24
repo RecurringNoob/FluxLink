@@ -12,7 +12,7 @@ FluxLink combines two tools into one workflow: **FluxDiff** — a structured dif
 |---|---|
 | **FluxDiff** | Compares two KiCad board files semantically — components, nets, routing, ERC, power tree, differential pairs, grounding, impedance, and BOM |
 | **Board Viewer** | Flask + React/Vite frontend: side-by-side / toggle / overlay view with interactive findings markers |
-| **FluxLink Chat** | RAG pipeline over git history — embeds diff summaries into a FAISS vector store, answers natural-language questions via OpenAI with cited sources |
+| **FluxLink Chat** | RAG pipeline over git history — embeds diff summaries into a FAISS vector store, answers natural-language questions with cited sources, using OpenAI, Gemini or any OpenAI-compatible model |
 
 ---
 
@@ -65,9 +65,9 @@ viewer API cannot bind.)
 ### Ask questions about board history
 
 ```bash
-# 1. Set credentials
+# 1. Set credentials — one of these (see "Choosing the model" below)
 export FLUXDIFF_REPO_PATH=/path/to/kicad/repo
-export OPENAI_API_KEY=sk-...
+export OPENAI_API_KEY=sk-...        # or: export GEMINI_API_KEY=...
 
 # 2. Ingest git history into the vector store
 python -m fluxdiff.rag.ingest.run_ingest --max-commits 50
@@ -176,7 +176,7 @@ DELETE /repos/{id}             → remove the repository and its index
 One repository is indexed at a time (`409` while busy). Indexes live under
 `rag_db/repos/<id>/`, listed in `rag_db/repos.json`. `DELETE /chat/session/{session_id}` forgets a conversation.
 If the LLM call fails the API returns HTTP 502 with the error in `detail`.
-The server starts without `OPENAI_API_KEY`; until the key is set, chat requests
+The server starts without an API key; until one is set, chat requests
 and `/health` return HTTP 503 with the reason in `detail`.
 
 #### Filtered retrieval
@@ -317,6 +317,36 @@ Groups components by `(value, footprint)`, queries the ERP adapter, and reports 
 
 ---
 
+## Choosing the model (OpenAI, Gemini, local)
+
+The chat is provider-agnostic. Set the key for the provider you want in `.env`:
+
+```bash
+OPENAI_API_KEY=sk-...          # OpenAI: gpt-4o-mini + text-embedding-3-small
+# or
+GEMINI_API_KEY=...             # Gemini: gemini-3.8-flash + gemini-embedding-2
+```
+
+With only one key set, that provider is used. With both, OpenAI is used unless
+`FLUXDIFF_LLM_PROVIDER=gemini`. Answers and search can use different providers
+(`FLUXDIFF_EMBEDDING_PROVIDER`), and either model can be changed with
+`FLUXDIFF_LLM_MODEL` / `FLUXDIFF_EMBEDDING_MODEL`. The chat header shows the
+model answering.
+
+**OpenAI-compatible servers** (Ollama, LM Studio, vLLM, Groq, OpenRouter, Azure
+OpenAI) use the OpenAI provider with a base URL, for example a fully local setup:
+
+```bash
+OPENAI_BASE_URL=http://localhost:11434/v1   # Ollama
+OPENAI_API_KEY=ollama                        # any value
+FLUXDIFF_LLM_MODEL=llama3.1
+FLUXDIFF_EMBEDDING_MODEL=nomic-embed-text
+```
+
+**Changing the embedding model** puts existing indexes in a different vector
+space. Each index records the model that built it: the chat asks you to re-index
+(↻) such repositories, and re-indexing rebuilds them automatically.
+
 ## Configuration
 
 | Variable | Default | Purpose |
@@ -325,9 +355,13 @@ Groups components by `(value, footprint)`, queries the ERP adapter, and reports 
 | `FLUXDIFF_GITHUB_REPO` | *(unset)* | `owner/repo` to ingest from GitHub without cloning (same as `--github`) |
 | `GITHUB_TOKEN` | *(unset)* | GitHub token for private repositories or a higher API limit |
 | `FLUXLINK_ALLOW_LOCAL_REPOS` | `1` | `0` stops the chat UI from indexing local folders (set it when the API is shared) |
-| `OPENAI_API_KEY` | *(required)* | OpenAI API key |
-| `FLUXDIFF_EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model |
-| `FLUXDIFF_LLM_MODEL` | `gpt-4o-mini` | Chat completion model |
+| `OPENAI_API_KEY` | — | OpenAI (or OpenAI-compatible server) key |
+| `GEMINI_API_KEY` | — | Gemini key (`GOOGLE_API_KEY` also works) |
+| `FLUXDIFF_LLM_PROVIDER` | from the key present | `openai` or `gemini` |
+| `FLUXDIFF_EMBEDDING_PROVIDER` | same as LLM provider | `openai` or `gemini` |
+| `FLUXDIFF_LLM_MODEL` | `gpt-4o-mini` / `gemini-3.8-flash` | Chat completion model |
+| `FLUXDIFF_EMBEDDING_MODEL` | `text-embedding-3-small` / `gemini-embedding-2` | Embedding model |
+| `OPENAI_BASE_URL` | OpenAI | OpenAI-compatible server (Ollama, Groq, OpenRouter, ...) |
 | `FLUXDIFF_TOP_K` | `5` | Documents retrieved per query |
 | `FLUXDIFF_MEMORY_WINDOW` | `5` | Conversation turns kept in context |
 | `FLUXDIFF_VECTOR_DB_PATH` | `rag_db/` at the repository root | FAISS index storage path |
@@ -403,11 +437,12 @@ tests/                             # pytest suite (`pytest`)
 ### Swapping the vector store
 Replace `VectorStore` in `rag/embedding/vector_store.py`. Keep the interface: `add_documents()`, `similarity_search()`, `clear()`.
 
-### Swapping the LLM
-Replace `LLMClient.generate_response(prompt: str) -> str` in `rag/llm/llm_client.py`. Update `FLUXDIFF_LLM_MODEL`.
-
-### Swapping the embedding model
-Replace `Embedder.embed_documents()` and `embed_query()` in `rag/embedding/embedder.py`. If the embedding dimension changes, run `--clear` before re-ingesting — the FAISS index dimension is fixed at creation time.
+### Adding an LLM or embedding provider
+Add the provider name to `rag/providers.py` (defaults, key check), a branch in
+`LLMClient` (`rag/llm/llm_client.py`) and a backend class in `rag/embedding/embedder.py`
+with `embed(texts, is_query)` and `max_input_chars`. Indexes record
+`Embedder.signature` (`provider:model`), so switching models is detected and
+re-indexing rebuilds them.
 
 ### Persisting chat memory across restarts
 `ChatEngine` keeps one `ChatMemory` per session id in process memory (the 500 most recent sessions). Replace `ChatMemory` in `rag/chat/memory.py` with a Redis- or DB-backed implementation. Keep the interface: `add(user, assistant)`, `get_context() -> str`, `clear()`.
@@ -421,7 +456,7 @@ Replace `Embedder.embed_documents()` and `embed_query()` in `rag/embedding/embed
 | `click` | CLI argument parsing |
 | `flask` + `flask-cors` | Board viewer API |
 | `fastapi` + `uvicorn` + `pydantic` *(`[rag]` extra)* | RAG chat API |
-| `openai`, `faiss-cpu` *(`[rag]` extra)* | Embeddings, chat completions, vector search |
+| `openai`, `google-genai`, `faiss-cpu` *(`[rag]` extra)* | Embeddings, chat completions (OpenAI / Gemini), vector search |
 | `numpy` | Array operations |
 | `opencv-python` | Image processing |
 | `cairosvg` | SVG → PNG conversion |

@@ -13,4 +13,5 @@ uvicorn
 pydantic
 python-dotenv
 openai
+google-genai
 faiss-cpu

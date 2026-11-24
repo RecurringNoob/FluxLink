@@ -68,6 +68,7 @@ class Repo:
     message: str = ""
     documents: int = 0
     max_commits: int = 50
+    embedding: str = ""    # "provider:model" the index was built with
     updated: str = ""
 
 
@@ -268,6 +269,7 @@ class RepoManager:
             count = len(store)
             done = (f"Indexed {count} document(s)." if count
                     else "No board history found (no commits changed a .kicad_pcb file).")
-            self._update(repo_id, status="ready", documents=count, message=done)
+            self._update(repo_id, status="ready", documents=count, message=done,
+                         embedding=store.embedding or getattr(embedder, "signature", ""))
         except Exception as e:                       # reported to the UI, not raised
             self._update(repo_id, status="error", message=f"{type(e).__name__}: {e}"[:300])

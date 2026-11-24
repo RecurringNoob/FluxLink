@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import type { JSX } from "react";
 import "./chat.css";
 import { RepoPanel } from "./RepoPanel";
-import { useRepos } from "./repos";
+import { needsReindex, useRepos } from "./repos";
 import type { RepoKind } from "./repos";
 
 const API_URL: string = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
@@ -240,13 +240,14 @@ export function ChatApp(): JSX.Element {
   // Server-side conversation memory is keyed by this id (see rag/api.py).
   const [sessionId, setSessionId] = useState<string | null>(null);
   // Repository the chat answers about (see rag/repos.py).
-  const { repos, loaded, allowLocal, loadError, add, reindex, remove } = useRepos(API_URL);
+  const { repos, models, loaded, allowLocal, loadError, add, reindex, remove } = useRepos(API_URL);
   const [activeRepoId, setActiveRepoId] = useState<string | null>(loadActiveRepo);
   const activeRepo =
     repos.find((r) => r.id === activeRepoId) ??
     repos.find((r) => r.status === "ready") ??
     null;
-  const repoReady = !activeRepo || activeRepo.status === "ready";
+  const repoStale = activeRepo ? needsReindex(activeRepo, models) : false;
+  const repoReady = !activeRepo || (activeRepo.status === "ready" && !repoStale);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -437,6 +438,7 @@ export function ChatApp(): JSX.Element {
         <div className="flex-1 overflow-y-auto px-3 py-2">
           <RepoPanel
             repos={repos}
+            models={models}
             loaded={loaded}
             allowLocal={allowLocal}
             loadError={loadError}
@@ -482,6 +484,14 @@ export function ChatApp(): JSX.Element {
           </div>
 
           <div className="flex flex-1 justify-end items-center gap-2">
+            {models && (
+              <span
+                className="hidden sm:inline rounded-full border border-zinc-200 dark:border-zinc-700 px-2.5 py-1 text-xs text-zinc-500 dark:text-zinc-400"
+                title={`Answers: ${models.llm} · Search: ${models.embedding}`}
+              >
+                {models.llm.split(":")[1] ?? models.llm}
+              </span>
+            )}
             <button
               onClick={() => setIsDarkMode(!isDarkMode)}
               className="flex h-9 w-9 items-center justify-center rounded-full text-zinc-500 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-800 transition-colors"
@@ -579,7 +589,9 @@ export function ChatApp(): JSX.Element {
                 placeholder={
                   repoReady
                     ? `Ask about ${activeRepo ? activeRepo.label : "your board history"}…`
-                    : `${activeRepo?.label ?? "Repository"} is still being indexed…`
+                    : repoStale
+                      ? `Re-index ${activeRepo?.label ?? "this repository"} (↻) for the current embedding model`
+                      : `${activeRepo?.label ?? "Repository"} is still being indexed…`
                 }
                 disabled={!repoReady}
                 className="max-h-[200px] min-h-[50px] sm:min-h-[56px] w-full resize-none bg-transparent py-3 sm:py-4 pl-4 sm:pl-5 pr-12 sm:pr-14 text-[16px] sm:text-[15px] leading-relaxed text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-500 dark:placeholder:text-zinc-400 focus:outline-none"

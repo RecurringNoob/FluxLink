@@ -14,13 +14,27 @@ export interface Repo {
   message: string;
   documents: number;
   max_commits: number;
+  embedding?: string;     // "provider:model" the index was built with
   updated: string;
+}
+
+/** "provider:model" strings the chat API is currently using. */
+export interface Models {
+  llm: string;
+  embedding: string;
+}
+
+/** True when the repo's index was built with another embedding model. */
+export function needsReindex(repo: Repo, models: Models | null): boolean {
+  return Boolean(repo.embedding && models && repo.embedding !== models.embedding);
 }
 
 interface RepoList {
   repos: Repo[];
   allow_local: boolean;
   busy: boolean;
+  llm?: string;
+  embedding?: string;
 }
 
 async function call<T>(apiUrl: string, path: string, init?: RequestInit): Promise<T> {
@@ -44,12 +58,14 @@ export function useRepos(apiUrl: string) {
   const [allowLocal, setAllowLocal] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
+  const [models, setModels] = useState<Models | null>(null);
 
   const refresh = useCallback(async () => {
     try {
       const data = await call<RepoList>(apiUrl, "/repos");
       setRepos(data.repos);
       setAllowLocal(data.allow_local);
+      setModels(data.llm && data.embedding ? { llm: data.llm, embedding: data.embedding } : null);
       setLoadError(null);
     } catch (e) {
       setLoadError(e instanceof Error ? e.message : String(e));
@@ -88,5 +104,5 @@ export function useRepos(apiUrl: string) {
     await refresh();
   }, [apiUrl, refresh]);
 
-  return { repos, allowLocal, loadError, loaded, refresh, add, reindex, remove };
+  return { repos, models, allowLocal, loadError, loaded, refresh, add, reindex, remove };
 }

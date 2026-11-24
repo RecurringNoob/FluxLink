@@ -1,9 +1,11 @@
 import { useState } from "react";
 import type { FormEvent, JSX } from "react";
-import type { Repo, RepoKind } from "./repos";
+import { needsReindex } from "./repos";
+import type { Models, Repo, RepoKind } from "./repos";
 
 interface RepoPanelProps {
   repos: Repo[];
+  models: Models | null;
   loaded: boolean;
   allowLocal: boolean;
   loadError: string | null;
@@ -16,8 +18,18 @@ interface RepoPanelProps {
 
 const KIND_LABEL: Record<Repo["kind"], string> = { github: "GitHub", local: "Local", cli: "CLI" };
 
-function StatusLine({ repo }: { repo: Repo }): JSX.Element {
+const provider = (signature?: string) => (signature ?? "").split(":")[0];
+
+function StatusLine({ repo, models }: { repo: Repo; models: Models | null }): JSX.Element {
   const kind = KIND_LABEL[repo.kind];
+  if (repo.status === "ready" && needsReindex(repo, models)) {
+    return (
+      <span className="truncate text-amber-300/90"
+            title={`Built with ${repo.embedding}; the server now uses ${models?.embedding}`}>
+        {kind} · built with {provider(repo.embedding)} — re-index (↻)
+      </span>
+    );
+  }
   if (repo.status === "indexing") {
     return (
       <span className="flex items-center gap-1.5 text-amber-300/90">
@@ -37,7 +49,7 @@ function StatusLine({ repo }: { repo: Repo }): JSX.Element {
 }
 
 export function RepoPanel({
-  repos, loaded, allowLocal, loadError, activeRepoId, onSelect, onAdd, onReindex, onRemove,
+  repos, models, loaded, allowLocal, loadError, activeRepoId, onSelect, onAdd, onReindex, onRemove,
 }: RepoPanelProps): JSX.Element {
   const [formOpen, setFormOpen] = useState(false);
   // With no repositories yet, the form is the only useful thing to show.
@@ -173,7 +185,7 @@ export function RepoPanel({
                   {repo.label}
                 </span>
                 <span className="text-[11px] min-w-0 flex">
-                  <StatusLine repo={repo} />
+                  <StatusLine repo={repo} models={models} />
                 </span>
               </button>
               {repo.kind !== "cli" && (

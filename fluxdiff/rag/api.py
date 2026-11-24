@@ -34,7 +34,9 @@ from pydantic import BaseModel
 
 load_dotenv()
 
+from fluxdiff.rag import providers
 from fluxdiff.rag.chat.chat_engine import ChatEngine
+from fluxdiff.rag.embedding.vector_store import EmbeddingMismatch
 from fluxdiff.rag.llm.llm_client import LLMError
 from fluxdiff.rag.repos import (DEFAULT_REPO_ID, LocalReposDisabled, RepoBusy, RepoError,
                                 RepoManager, local_repos_allowed)
@@ -62,7 +64,7 @@ app.add_middleware(
 )
 
 # Built on first use, not at import: constructing it creates the OpenAI
-# client, which raises without OPENAI_API_KEY.  Creating it at import time
+# client, which raises without an API key.  Creating it at import time
 # made `uvicorn fluxdiff.rag.api:app` crash on startup (and the module
 # impossible to import in tests) instead of answering with a clear error.
 chat_engine: Optional[ChatEngine] = None
@@ -85,10 +87,12 @@ def get_chat_engine() -> ChatEngine:
                 try:
                     chat_engine = ChatEngine(store_for=_store_for)
                 except Exception as e:
+                    p = providers.llm_provider()
                     raise HTTPException(
                         status_code=503,
                         detail=(f"Chat engine unavailable ({type(e).__name__}: {e}). "
-                                f"Check OPENAI_API_KEY and that the [rag] extras are installed."),
+                                f"Check {providers.KEY_HINT.get(p, 'the API key')} "
+                                f"(provider: {p}) and that the [rag] extras are installed."),
                     )
     return chat_engine
 
@@ -143,6 +147,8 @@ def _respond(rag_query: RAGQuery, session_id: Optional[str], repo_id: Optional[s
                                                       repo_id=repo_id)
     except LLMError as e:
         raise HTTPException(status_code=502, detail=f"LLM request failed: {e}")
+    except EmbeddingMismatch as e:
+        raise HTTPException(status_code=409, detail=str(e))
     return {
         "answer":     response.answer,
         "sources":    response.sources,
@@ -179,7 +185,7 @@ def reset_session(session_id: str):
 @app.get("/repos")
 def list_repos():
     return {"repos": repo_manager.list(), "allow_local": local_repos_allowed(),
-            "busy": repo_manager.is_busy()}
+            "busy": repo_manager.is_busy(), **providers.describe()}
 
 
 def _repo_call(fn, *args):
@@ -221,8 +227,9 @@ def remove_repo(repo_id: str):
 @app.get("/health")
 def health():
     """Liveness probe — reports the documents the chat engine is serving.
-    Returns 503 when the engine cannot start (e.g. OPENAI_API_KEY missing)."""
+    Returns 503 when the engine cannot start (e.g. no API key)."""
     return {
         "status":            "ok",
         "documents_indexed": len(get_chat_engine().retriever.store),
+        **providers.describe(),
     }

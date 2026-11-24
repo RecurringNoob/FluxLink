@@ -27,6 +27,7 @@ rag = [
     "pydantic",
     "python-dotenv",
     "openai",
+    "google-genai",
     "faiss-cpu",
 ]
 dev = ["pytest"]
