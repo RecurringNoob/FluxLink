@@ -94,7 +94,7 @@ def parse_pcb(file_path):
     components = extract_components(index, nets)
     traces = extract_traces(index, nets)
     vias = extract_vias(index, nets)
-    arcs = extract_arcs(index, nets)
+    arcs = extract_arcs(root, index, nets)
     zones = extract_zones(index, nets)
     board_outline = extract_board_outline(root)
 
@@ -388,9 +388,14 @@ def extract_vias(index, nets):
 # Arcs  (gr_arc on copper layers only)
 # ---------------------------------------------------------------------------
 
-def extract_arcs(index, nets):
+def extract_arcs(root, index, nets):
     """
-    Parse gr_arc nodes that reside on copper layers.
+    Parse copper arcs.
+
+    Routed arc tracks are top-level ``(arc ...)`` nodes (KiCad 6+); copper
+    graphic arcs are ``(gr_arc ...)``.  Only top-level ``arc`` nodes are read:
+    KiCad 7+ also writes ``(arc ...)`` entries inside polygon ``(pts ...)``
+    lists, which are outline geometry, not tracks.
 
     KiCad uses three-point arcs: (start ...) (mid ...) (end ...).
     Arcs on non-copper layers (e.g. Edge.Cuts, silkscreen) are skipped.
@@ -399,8 +404,9 @@ def extract_arcs(index, nets):
     """
     arcs = []
     net_map = {n.net_id: n.name for n in nets}
+    arc_nodes = [c for c in root.children if c.name == "arc"] + index.get("gr_arc", [])
 
-    for arc_node in index.get("gr_arc", []):
+    for arc_node in arc_nodes:
         layer = ""
         start = mid = end = None
         net_name = UNCONNECTED_NET
@@ -572,11 +578,79 @@ def _arc_bbox(start, mid, end):
     return min(pts_x), min(pts_y), max(pts_x), max(pts_y)
 
 
+def _xy(node, name):
+    for c in node.children:
+        if c.name == name:
+            try:
+                return float(c.values[0]), float(c.values[1])
+            except (IndexError, ValueError):
+                return None
+    return None
+
+
+def _shape_points(node):
+    """
+    Points whose bounding box covers one Edge.Cuts shape, in the shape's own
+    coordinate frame.  Handles line/rect/arc/circle/poly/curve, with both the
+    gr_* (board) and fp_* (footprint) spellings.
+    """
+    kind = node.name.split("_", 1)[-1]
+    if kind in ("line", "rect"):
+        pts = [p for p in (_xy(node, "start"), _xy(node, "end")) if p]
+        if kind == "rect" and len(pts) == 2:
+            (x0, y0), (x1, y1) = pts
+            pts = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+        return pts
+    if kind == "arc":
+        start, mid, end = _xy(node, "start"), _xy(node, "mid"), _xy(node, "end")
+        if start and mid and end:
+            bx0, by0, bx1, by1 = _arc_bbox(start, mid, end)
+            return [(bx0, by0), (bx1, by1)]
+        return []
+    if kind == "circle":
+        center, end = _xy(node, "center"), _xy(node, "end")
+        if center and end:
+            r = math.hypot(end[0] - center[0], end[1] - center[1])
+            return [(center[0] - r, center[1] - r), (center[0] + r, center[1] + r)]
+        return []
+    if kind in ("poly", "curve"):
+        # Bezier control points bound the curve, so this is conservative.
+        pts = []
+        for c in node.children:
+            if c.name != "pts":
+                continue
+            for item in c.children:
+                if item.name == "xy" and len(item.values) >= 2:
+                    try:
+                        pts.append((float(item.values[0]), float(item.values[1])))
+                    except ValueError:
+                        pass
+                elif item.name == "arc":
+                    s, m, e = _xy(item, "start"), _xy(item, "mid"), _xy(item, "end")
+                    if s and m and e:
+                        bx0, by0, bx1, by1 = _arc_bbox(s, m, e)
+                        pts.extend([(bx0, by0), (bx1, by1)])
+        return pts
+    return []
+
+
+def _node_layer(node):
+    for c in node.children:
+        if c.name == "layer":
+            return _strip(c.values[0]) if c.values else ""
+    return ""
+
+
+_EDGE_SHAPES = {"line", "rect", "arc", "circle", "poly", "curve"}
+
+
 def extract_board_outline(root):
     """
-    Walk all top-level gr_line, gr_arc, and gr_circle nodes whose layer is
-    Edge.Cuts and return the tight axis-aligned bounding box as
-    (min_x, min_y, max_x, max_y) in KiCad absolute mm.
+    Collect every Edge.Cuts shape — top-level gr_line / gr_rect / gr_arc /
+    gr_circle / gr_poly / gr_curve, plus fp_* Edge.Cuts items inside
+    footprints (transformed to board space) — and return the tight
+    axis-aligned bounding box as (min_x, min_y, max_x, max_y) in KiCad
+    absolute mm.
 
     Returns None if no Edge.Cuts geometry is found.
 
@@ -589,67 +663,37 @@ def extract_board_outline(root):
     """
     xs, ys = [], []
 
+    def add(points):
+        for x, y in points:
+            xs.append(x)
+            ys.append(y)
+
     for node in root.children:
-        # Determine layer for this node.
-        layer = ""
-        for c in node.children:
-            if c.name == "layer":
-                layer = _strip(c.values[0]) if c.values else ""
-                break
+        if node.name.startswith("gr_") and node.name[3:] in _EDGE_SHAPES:
+            if "Edge.Cuts" in _node_layer(node):
+                add(_shape_points(node))
 
-        if "Edge.Cuts" not in layer:
-            continue
-
-        if node.name == "gr_line":
+        elif node.name in ("footprint", "module"):
+            fp_at = _xy(node, "at") or (0.0, 0.0)
+            fp_rot = 0.0
             for c in node.children:
-                if c.name in ("start", "end"):
+                if c.name == "at" and len(c.values) >= 3:
                     try:
-                        xs.append(float(c.values[0]))
-                        ys.append(float(c.values[1]))
-                    except (IndexError, ValueError):
+                        fp_rot = float(c.values[2])
+                    except ValueError:
                         pass
-
-        elif node.name == "gr_arc":
-            start = mid = end = None
-            for c in node.children:
-                if c.name == "start":
-                    try:
-                        start = (float(c.values[0]), float(c.values[1]))
-                    except (IndexError, ValueError):
-                        pass
-                elif c.name == "mid":
-                    try:
-                        mid = (float(c.values[0]), float(c.values[1]))
-                    except (IndexError, ValueError):
-                        pass
-                elif c.name == "end":
-                    try:
-                        end = (float(c.values[0]), float(c.values[1]))
-                    except (IndexError, ValueError):
-                        pass
-            if start and mid and end:
-                bx0, by0, bx1, by1 = _arc_bbox(start, mid, end)
-                xs.extend([bx0, bx1])
-                ys.extend([by0, by1])
-
-        elif node.name == "gr_circle":
-            center = None
-            end_pt = None
-            for c in node.children:
-                if c.name == "center":
-                    try:
-                        center = (float(c.values[0]), float(c.values[1]))
-                    except (IndexError, ValueError):
-                        pass
-                elif c.name == "end":
-                    try:
-                        end_pt = (float(c.values[0]), float(c.values[1]))
-                    except (IndexError, ValueError):
-                        pass
-            if center and end_pt:
-                r = math.hypot(end_pt[0] - center[0], end_pt[1] - center[1])
-                xs.extend([center[0] - r, center[0] + r])
-                ys.extend([center[1] - r, center[1] + r])
+            for child in node.children:
+                if (child.name.startswith("fp_") and child.name[3:] in _EDGE_SHAPES
+                        and "Edge.Cuts" in _node_layer(child)):
+                    # Footprint items are stored in the footprint's local frame.
+                    # Rotating a bbox's corners and re-boxing stays conservative.
+                    local = _shape_points(child)
+                    if len(local) == 2:
+                        (x0, y0), (x1, y1) = local
+                        local = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+                    for lx, ly in local:
+                        rx, ry = _rotate_point(lx, ly, fp_rot)
+                        add([(fp_at[0] + rx, fp_at[1] + ry)])
 
     if not xs:
         return None

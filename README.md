@@ -18,27 +18,25 @@ FluxLink combines two tools into one workflow: **FluxDiff** — a structured dif
 
 ## Installation
 
-**System requirement:** KiCad must be installed and `kicad-cli` must be on your `PATH`.
+**System requirements:** Python 3.9+, KiCad with `kicad-cli` on your `PATH`
+(for the SVG/PNG exports), and the Cairo library (for `cairosvg`). Parsing,
+diffing and the text report work without KiCad or Cairo.
 
 ```bash
-pip install fluxlink
+git clone https://github.com/RecurringNoob/FluxLink.git
+cd FluxLink
+pip install -e .            # diff engine, CLI and board viewer API
+pip install -e ".[rag]"     # + chat / RAG (fastapi, uvicorn, openai, faiss-cpu)
+pip install -e ".[dev]"     # + pytest; run the tests with `pytest`
 ```
 
-Or from source:
+The board viewer frontend is a separate npm project:
 
 ```bash
-git clone https://github.com/your-org/fluxlink.git
-cd fluxlink
-pip install -e .
+cd fluxdiff-ui/fluxlink
+npm install
+npm run dev      # dev server on :5173, or `npm run build` to have Flask serve it on :5000
 ```
-
-**Optional dependencies:**
-
-| Package | Purpose |
-|---|---|
-| `pyyaml` | Stackup config in YAML format (falls back to JSON if absent) |
-| `faiss-cpu` | Required for the chat / RAG sub-system |
-| `openai` | Required for embeddings and chat completions |
 
 ---
 
@@ -57,7 +55,12 @@ fluxlink before.kicad_pcb after.kicad_pcb --stackup stackup.yaml
 fluxlink before.kicad_pcb after.kicad_pcb --viewer
 ```
 
-The board viewer runs at `http://localhost:5000`. When the Vite dev server is running on port 5173, the viewer redirects there automatically.
+`--viewer` starts the Flask API on `http://localhost:5000`. If you have run
+`npm run build` in `fluxdiff-ui/fluxlink`, Flask serves the viewer itself on
+:5000; otherwise run `npm run dev` there and open `http://localhost:5173`.
+Set `FLUXLINK_FRONTEND_DIST` to serve a build from another location.
+(On macOS, AirPlay Receiver also listens on port 5000; turn it off if the
+viewer API cannot bind.)
 
 ### Ask questions about board history
 
@@ -67,12 +70,12 @@ export FLUXDIFF_REPO_PATH=/path/to/kicad/repo
 export OPENAI_API_KEY=sk-...
 
 # 2. Ingest git history into the vector store
-python -m fluxlink.rag.ingest.run_ingest --max-commits 50
+python -m fluxdiff.rag.ingest.run_ingest --max-commits 50
 
 # 3. Start the chat API
-uvicorn fluxlink.rag.api:app --host 0.0.0.0 --port 8000 --reload
+uvicorn fluxdiff.rag.api:app --host 127.0.0.1 --port 8000
 
-# 4. Open the chat UI at /chat in the board viewer
+# 4. Open the chat UI at /chat (http://localhost:5173/chat with the Vite dev server)
 ```
 
 ---
@@ -98,7 +101,9 @@ The viewer is a React/Vite frontend served by Flask. Three view modes:
 - **Toggle** — flip between before and after with a single key
 - **Overlay** — pixel-level diff image
 
-The **findings sidebar** lists all issues grouped by category (ERC, POWER, DIFF_PAIR, GROUND, IMPEDANCE, BOM, COMPONENT) with severity badges (CRITICAL / WARNING / INFO), free-text search, and severity filtering. Clicking any finding or component change pans and zooms the board to that location.
+The **findings sidebar** lists all issues grouped by category (ERC, POWER, DIFF_PAIR, GROUND, IMPEDANCE, BOM) with severity badges (CRITICAL / WARNING / INFO), a NEW / EXISTING / FIXED status, free-text search, and severity filtering. The **components tab** lists added, removed, moved and modified parts. Clicking any finding or component change pans and zooms the board to that location.
+
+A finding is EXISTING when the same issue (same check, severity and nets) is on both boards, even if a part moved or a measured value changed; only issues that appear or disappear are NEW or FIXED.
 
 **Keyboard shortcuts:**
 
@@ -121,15 +126,22 @@ Ask questions like:
 - *"Which components were moved between rev A and rev B?"*
 - *"Show me all CRITICAL findings across the last 10 commits."*
 
-Every answer cites the specific commit ID and file it was sourced from. A collapsible sources panel appears below each assistant message.
+Every answer lists the commits and files it was sourced from in a collapsible sources panel below the message. Each browser conversation has its own server-side memory; **New Chat** clears it.
 
 ### Chat API
 
 ```
 POST /chat
-Body:    { "query": "What changed in the last commit?" }
-Returns: { "answer": "...", "sources": [{ "commit_id": "a1b2c3d", "file_name": "board/main.kicad_pcb" }] }
+Body:    { "query": "What changed in the last commit?", "session_id": "optional" }
+Returns: { "answer": "...",
+           "session_id": "3f2a…",
+           "sources": [{ "commit": "<40-char hash>", "file": "board/main.kicad_pcb",
+                         "type": "net", "date": "...", "author": "..." }] }
 ```
+
+Send the returned `session_id` with the next request to continue the conversation;
+omit it to start a new one. `DELETE /chat/session/{session_id}` forgets a conversation.
+If the LLM call fails the API returns HTTP 502 with the error in `detail`.
 
 #### Filtered retrieval
 
@@ -140,14 +152,14 @@ POST /chat/filtered
 {
   "query": "Are there impedance issues?",
   "filters": {
-    "commit": "a1b2c3d4e5f6",
+    "commit": "a1b2c3d",
     "type": "impedance",
     "file": "board/main.kicad_pcb"
   }
 }
 ```
 
-All filter keys are optional. Supported document types: `summary`, `component`, `net`, `routing`, `power_tree`, `diff_pair`, `grounding`, `impedance`, `bom`, `repo_file`.
+All filter keys are optional, and filters are applied before the top-k cut, so you get the best matches *within* the filter. `commit` accepts a full hash or a prefix of at least 4 characters; `file` is the repository-relative path. Supported document types: `summary`, `component`, `net`, `routing`, `power_tree`, `diff_pair`, `grounding`, `impedance`, `bom`, `repo_file`.
 
 #### Health check
 
@@ -161,17 +173,31 @@ GET /health
 ## Ingestion
 
 ```bash
-# Index the last 50 commits
-python -m fluxlink.rag.ingest.run_ingest --max-commits 50
+# Index the last 50 commits that changed a .kicad_pcb file
+python -m fluxdiff.rag.ingest.run_ingest --max-commits 50
 
 # Re-index from scratch
-python -m fluxlink.rag.ingest.run_ingest --max-commits 50 --clear
+python -m fluxdiff.rag.ingest.run_ingest --max-commits 50 --clear
 
 # Include impedance analysis during ingestion
-python -m fluxlink.rag.ingest.run_ingest --stackup stackup.yaml
+python -m fluxdiff.rag.ingest.run_ingest --stackup stackup.yaml
+
+# Board history only — do not index the repository's text files
+python -m fluxdiff.rag.ingest.run_ingest --no-repo-files
 ```
 
-Ingestion is idempotent — documents are deduplicated by SHA-256 content hash. Running it twice produces the same index.
+Each commit that changed a board file is diffed against its first parent, one
+board file at a time. Long documents are split into chunks that fit the
+embedding model's input limit, and requests are batched.
+
+Ingestion is idempotent: documents are deduplicated by SHA-256 content hash and
+only new documents are embedded, so re-running it costs nothing for unchanged
+history. A running chat server picks up a new ingestion without a restart.
+
+By default the repository's `.md`, `.txt`, `.py`, `.json` and `.yaml` files are
+also indexed (lock files and files over 256 KB are skipped). **Their contents are
+sent to the OpenAI embeddings API** — keep secrets out of tracked config files,
+or use `--no-repo-files`.
 
 ---
 
@@ -194,6 +220,28 @@ layers:
     copper_thickness: 0.035
 ```
 
+`dielectric_thickness` is the trace-to-plane height for microstrip and the
+plane-to-plane spacing for stripline.
+
+Optional `critical_nets` sets explicit targets for named nets (exact net names).
+The calculator works on single traces, so targets are **single-ended**; mark a
+differential target with `differential: true` and it is halved (Zdiff ≈ 2·Z0, a
+loose-coupling approximation):
+
+```yaml
+critical_nets:
+  /RF_OUT:
+    target_ohms: 50
+    tolerance_ohms: 3
+  /HDMI_D0_P:
+    target_ohms: 100
+    tolerance_ohms: 10
+    differential: true
+```
+
+Without `critical_nets`, built-in single-ended targets apply to nets whose name
+contains a USB, RF/ANT, LVDS, HDMI, ETH, MIPI or PCIE segment.
+
 Pass with `--stackup stackup.yaml`. Both YAML and JSON are accepted.
 
 ---
@@ -207,16 +255,16 @@ Power shorts, missing pull-ups on I2C/open-drain nets, missing bypass caps withi
 Classifies regulators, connectors, batteries, and IC loads into a rail graph. Reports rail contention (CRITICAL), unused regulator outputs (WARNING), and sourceless rails (WARNING).
 
 ### Differential Pairs
-Detects paired nets by suffix (`_P`/`_N`, `+`/`−`, `_DP`/`_DN`, etc.). Checks length mismatch > 0.5 mm, via count asymmetry, and layer asymmetry per pair.
+Detects paired nets by suffix (`_P`/`_N`, `+`/`−`, `_DP`/`_DN`, etc.). Checks length mismatch > 0.5 mm (segments and arc tracks), via count asymmetry, and layer asymmetry per pair. A lone `_P`/`_N` net is reported only when its name looks like a differential interface (USB, LVDS, CLK, TX/RX, …), so active-low signals such as `RESET_N` are left alone.
 
 ### Grounding
 GND island detection, analog/digital IC mix on a shared GND net, and ADC components without a GND reference within 10 mm.
 
 ### Impedance
-Microstrip and stripline impedance from trace width and stackup config, compared against targets for critical net types (USB, RF, LVDS, HDMI, Ethernet, MIPI, PCIe).
+Single-ended microstrip and stripline (IPC-2141) impedance from trace width and stackup config, compared against single-ended targets for critical net types (USB, RF, LVDS, HDMI, Ethernet, MIPI, PCIe). See *Stackup Configuration* for how differential targets are handled.
 
 ### BOM / Supply Chain
-Groups components by `(value, footprint)`, queries the ERP adapter, and reports out-of-stock (CRITICAL), low-stock (WARNING), or sufficient-stock (INFO). Swap `erp_service.fetch_inventory_from_erp()` with any real ERP client without touching other modules.
+Groups components by `(value, footprint)`, queries the ERP adapter, and reports out-of-stock (CRITICAL), low-stock (WARNING), or sufficient-stock (INFO). **No ERP is connected by default**, so the check reports "Stock not checked" instead of inventing numbers. Implement `erp_service.fetch_inventory_from_erp()` for your ERP without touching other modules. `FLUXLINK_ERP_DEMO=1` enables deterministic demo stock levels, labelled `[DEMO DATA]` in every finding.
 
 ---
 
@@ -224,14 +272,17 @@ Groups components by `(value, footprint)`, queries the ERP adapter, and reports 
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `FLUXDIFF_REPO_PATH` | *(required)* | Path to the KiCad git repository |
+| `FLUXDIFF_REPO_PATH` | current directory | Path to the KiCad git repository |
 | `OPENAI_API_KEY` | *(required)* | OpenAI API key |
 | `FLUXDIFF_EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model |
 | `FLUXDIFF_LLM_MODEL` | `gpt-4o-mini` | Chat completion model |
 | `FLUXDIFF_TOP_K` | `5` | Documents retrieved per query |
 | `FLUXDIFF_MEMORY_WINDOW` | `5` | Conversation turns kept in context |
-| `FLUXDIFF_VECTOR_DB_PATH` | `./rag_db` | FAISS index storage path |
-| `FLUXDIFF_CORS_ORIGINS` | `localhost:5173,3000,5000` | Allowed CORS origins (comma-separated) |
+| `FLUXDIFF_VECTOR_DB_PATH` | `rag_db/` at the repository root | FAISS index storage path |
+| `FLUXDIFF_CORS_ORIGINS` | `localhost:5173,3000,5000` | Allowed CORS origins for the chat API (comma-separated) |
+| `FLUXLINK_ERP_DEMO` | *(off)* | `1` to use demo stock levels in the BOM check |
+| `FLUXLINK_FRONTEND_DIST` | `fluxdiff-ui/fluxlink/dist` | Frontend build served by the Flask viewer |
+| `VITE_API_URL` | `http://localhost:8000` | Chat API URL used by the frontend (set at build time) |
 
 ---
 
@@ -248,7 +299,7 @@ Groups components by `(value, footprint)`, queries the ERP adapter, and reports 
 ## Architecture
 
 ```
-fluxlink/
+fluxdiff/                        # Python package (installed as `fluxlink`)
 ├── cli/main.py                  # Entry point — orchestrates the full pipeline
 ├── parser/
 │   ├── sexp_parser.py           # S-expression tokenizer and AST builder
@@ -280,6 +331,8 @@ fluxlink/
     ├── retrieval/retriever.py   # Query embedding → similarity search → metadata filter
     ├── llm/                     # LLM client, prompt templates
     └── chat/                    # ChatEngine, ChatMemory (rolling window)
+fluxdiff-ui/fluxlink/              # React + Vite frontend (board viewer, /chat)
+tests/                             # pytest suite (`pytest`)
 ```
 
 ---
@@ -305,7 +358,7 @@ Replace `LLMClient.generate_response(prompt: str) -> str` in `rag/llm/llm_client
 Replace `Embedder.embed_documents()` and `embed_query()` in `rag/embedding/embedder.py`. If the embedding dimension changes, run `--clear` before re-ingesting — the FAISS index dimension is fixed at creation time.
 
 ### Persisting chat memory across restarts
-Replace `ChatMemory` in `rag/chat/memory.py` with a Redis- or DB-backed implementation. Keep the interface: `add(user, assistant)`, `get_context() -> str`, `clear()`.
+`ChatEngine` keeps one `ChatMemory` per session id in process memory (the 500 most recent sessions). Replace `ChatMemory` in `rag/chat/memory.py` with a Redis- or DB-backed implementation. Keep the interface: `add(user, assistant)`, `get_context() -> str`, `clear()`.
 
 ---
 
@@ -315,14 +368,13 @@ Replace `ChatMemory` in `rag/chat/memory.py` with a Redis- or DB-backed implemen
 |---|---|
 | `click` | CLI argument parsing |
 | `flask` + `flask-cors` | Board viewer API |
-| `fastapi` + `uvicorn` + `pydantic` | RAG chat API |
-| `openai` | Embeddings and chat completions |
-| `faiss-cpu` | Vector similarity search |
+| `fastapi` + `uvicorn` + `pydantic` *(`[rag]` extra)* | RAG chat API |
+| `openai`, `faiss-cpu` *(`[rag]` extra)* | Embeddings, chat completions, vector search |
 | `numpy` | Array operations |
 | `opencv-python` | Image processing |
 | `cairosvg` | SVG → PNG conversion |
 | `python-dotenv` | `.env` file loading |
-| `pyyaml` *(optional)* | YAML stackup config |
+| `pyyaml` | YAML stackup config |
 | `kicad-cli` *(system)* | PCB export to SVG/PNG |
 
 ---

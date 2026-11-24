@@ -1,7 +1,6 @@
 # fluxdiff/visual/kicad_export.py
 import subprocess
 import os
-import cairosvg
 
 from fluxdiff.visual.constants import EXPORT_SCALE
 
@@ -103,6 +102,8 @@ def export_pcb_png(pcb_file: str, output_png: str, layers: str = DEFAULT_LAYERS)
 
     if not os.path.isfile(svg_file):
         raise RuntimeError(f"kicad-cli did not produce an SVG at {svg_file}")
+
+    import cairosvg  # deferred: needs the system cairo library
 
     try:
         cairosvg.svg2png(url=svg_file, write_to=output_png, scale=EXPORT_SCALE)

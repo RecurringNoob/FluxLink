@@ -31,8 +31,8 @@ def main(before_file, after_file, viewer, stackup, layers):
     Compare two KiCad PCB files and generate a semantic + visual diff.
 
     Example:
-        python -m fluxdiff.cli.main before.kicad_pcb after.kicad_pcb
-        python -m fluxdiff.cli.main before.kicad_pcb after.kicad_pcb --stackup stackup.yaml
+        fluxlink before.kicad_pcb after.kicad_pcb
+        fluxlink before.kicad_pcb after.kicad_pcb --stackup stackup.yaml
     """
 
     # 1. Parse
@@ -132,8 +132,8 @@ def main(before_file, after_file, viewer, stackup, layers):
         try:
             from fluxdiff.viewer.server import run_viewer_server
             print("\nStarting Flask API on http://localhost:5000")
-            print("Opening React viewer at http://localhost:5173")
-            print("(Run 'npm run dev' in fluxdiff/viewer/frontend/ if not already running)")
+            print("React viewer: built app on :5000, or the Vite dev server on :5173")
+            print("(Run 'npm install && npm run dev' in fluxdiff-ui/fluxlink/ if it is not running)")
             run_viewer_server(diff_report, power_tree_report)
         except Exception as e:
             print(f"[ERROR] Could not launch viewer: {e}")

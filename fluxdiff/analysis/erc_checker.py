@@ -18,16 +18,21 @@ All other logic, tunables, and fix annotations are unchanged.
 
 from math import hypot
 from fluxdiff.models.pcb_models import Finding
-from fluxdiff.analysis.net_names import is_voltage_rail_name
+import re
+from fluxdiff.analysis.net_names import is_voltage_rail_name, has_ref_prefix, net_tokens
 
-I2C_NET_SUBSTRINGS = ("SDA", "SCL")
-OPEN_DRAIN_NET_SUBSTRINGS = ("OD", "OPEN_DRAIN", "OPENDRAIN", "INT", "ALERT", "NRST", "RESET")
+# Matched against whole name tokens (split on non-alphanumerics), so "OD" no
+# longer fires on MODE/NODE and "INT" no longer fires on POINT/PRINT.
+_PULLUP_TOKEN = re.compile(
+    r"^(?:SDA\d*|SCL\d*|OD|OPENDRAIN|N?INT\d*|N?IRQ\d*|ALERT\d*|N?RST|N?RESET)$"
+)
 BYPASS_CAP_RADIUS_MM = 5.0
 BYPASS_CAP_MIN_CONNECTIONS = 2
 
 POWER_NET_SUBSTRINGS = ("VCC", "VDD", "VBUS", "V3V3", "V5V", "V1V8", "V3V", "AVCC", "AVDD", "DVCC", "DVDD")
 POWER_SYMBOL_PREFIXES = ("#PWR", "#FLG")
-RESISTOR_PREFIXES = ("R",)
+# Exact letter prefixes (see net_names.ref_prefix): "CN1" is not a capacitor.
+RESISTOR_PREFIXES = ("R", "RN")
 CAPACITOR_PREFIXES = ("C",)
 IC_PREFIXES = ("U", "IC", "AR")
 
@@ -45,13 +50,13 @@ def _is_power_symbol(ref):
     return any(ref.upper().startswith(p) for p in POWER_SYMBOL_PREFIXES)
 
 def _is_resistor(ref):
-    return any(ref.upper().startswith(p) for p in RESISTOR_PREFIXES)
+    return has_ref_prefix(ref, RESISTOR_PREFIXES)
 
 def _is_capacitor(ref):
-    return any(ref.upper().startswith(p) for p in CAPACITOR_PREFIXES)
+    return has_ref_prefix(ref, CAPACITOR_PREFIXES)
 
 def _is_ic(ref):
-    return any(ref.upper().startswith(p) for p in IC_PREFIXES)
+    return has_ref_prefix(ref, IC_PREFIXES)
 
 def _real_connections(connections):
     return {(ref, pad) for ref, pad in connections
@@ -63,9 +68,10 @@ def _net_is_power(net_name):
             or is_voltage_rail_name(net_name))
 
 def _net_needs_pullup(net_name):
-    upper = net_name.upper()
-    return (any(sub in upper for sub in I2C_NET_SUBSTRINGS)
-            or any(sub in upper for sub in OPEN_DRAIN_NET_SUBSTRINGS))
+    leaf = net_name.rsplit("/", 1)[-1].upper()
+    if "OPEN_DRAIN" in leaf:
+        return True
+    return any(_PULLUP_TOKEN.match(t) for t in net_tokens(net_name))
 
 def _distance(ax, ay, bx, by):
     return hypot(ax - bx, ay - by)

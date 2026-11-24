@@ -44,9 +44,21 @@ export interface FindingsMap {
   bom: Finding[];
 }
 
+// One entry per component change, built by diff_engine.component_diff.
+// Positions are KiCad mm on the old ("from") and new ("to") board.
+export interface ComponentChangeDetail {
+  type: "added" | "removed" | "moved" | "swapped" | "value" | "footprint" | "layer" | "rotation" | "annotated";
+  ref: string;
+  message: string;
+  from: Coordinates | null;
+  to: Coordinates | null;
+}
+
 export interface DiffResponse {
   // Plain string lists (text report — unchanged)
   components: string[];
+  // Structured component changes (absent from older servers)
+  component_details?: ComponentChangeDetail[];
   nets: string[];
   routing: string[];
   power_tree: string[];

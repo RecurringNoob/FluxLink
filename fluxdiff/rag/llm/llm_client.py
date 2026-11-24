@@ -3,7 +3,6 @@
 import os
 
 from dotenv import load_dotenv
-from openai import OpenAI
 
 from fluxdiff.rag.config import RAG_CONFIG
 from fluxdiff.rag.llm.prompt_templates import SYSTEM_PROMPT
@@ -11,10 +10,17 @@ from fluxdiff.rag.llm.prompt_templates import SYSTEM_PROMPT
 load_dotenv()
 
 
+class LLMError(RuntimeError):
+    """The completion request failed; the API maps this to HTTP 502."""
+
+
 class LLMClient:
-    def __init__(self):
-        self.model  = RAG_CONFIG["llm_model"]
-        self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    def __init__(self, client=None):
+        self.model = RAG_CONFIG["llm_model"]
+        if client is None:
+            from openai import OpenAI
+            client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        self.client = client
 
     def generate_response(self, prompt: str) -> str:
         try:
@@ -26,7 +32,8 @@ class LLMClient:
                 ],
                 temperature=0.2,
             )
-            return response.choices[0].message.content.strip()
         except Exception as e:
-            print(f"[LLMClient] Error: {e}")
-            return "Error generating response."
+            # Previously this returned "Error generating response." as if it
+            # were an answer (HTTP 200) and stored it in the chat memory.
+            raise LLMError(f"{type(e).__name__}: {e}") from e
+        return (response.choices[0].message.content or "").strip()

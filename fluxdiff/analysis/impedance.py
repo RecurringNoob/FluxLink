@@ -1,16 +1,23 @@
 import json
 import math
 import os
+import re
 from collections import defaultdict
 from fluxdiff.models.pcb_models import Finding
 
+# All targets are SINGLE-ENDED Z0, because that is what the calculator below
+# computes from one trace's width.  Differential standards are converted with
+# Zdiff ≈ 2·Z0, which holds for loosely coupled pairs (spacing ≥ 2× width)
+# and ignores coupling — treat results as a first-order check.
+#   USB 2.0  90 Ω diff  -> 45 Ω      HDMI / LVDS / MIPI / Ethernet 100 Ω diff -> 50 Ω
+#   PCIe     85 Ω diff  -> 42.5 Ω    RF / antenna feed 50 Ω single-ended
 DEFAULT_CRITICAL_NETS = {
     "USB_DP": (45,  5), "USB_DN": (45,  5),
     "USB_D+": (45,  5), "USB_D-": (45,  5),
-    "RF":     (50,  5), "ANT":    (50,  5),
-    "LVDS":   (100, 10), "HDMI":  (50,  5),
-    "ETH":    (100, 10), "MIPI":  (100, 10),
-    "PCIE":   (85,  5),
+    "RF":     (50,  5), "ANT":    (50,  5), "ANTENNA": (50, 5),
+    "LVDS":   (50,  5), "HDMI":   (50,  5),
+    "ETH":    (50,  5), "MIPI":   (50,  5),
+    "PCIE":   (42.5, 4),
 }
 
 DEFAULT_LAYER_CONFIG = {
@@ -46,9 +53,13 @@ def _microstrip_impedance(w_mm, h_mm, er, t_mm):
 
 
 def _stripline_impedance(w_mm, h_mm, er, t_mm):
+    """
+    Symmetric stripline (IPC-2141):  Z0 = 60/√εr · ln(4b / (0.67π(0.8w + t)))
+    where h_mm is b, the plane-to-plane dielectric spacing.
+    """
     if w_mm <= 0 or h_mm <= 0 or er <= 0:
         return None
-    d = 0.8 * (w_mm + t_mm)
+    d = 0.8 * w_mm + t_mm
     if d <= 0 or h_mm <= 0:
         return None
     z0 = (60 / math.sqrt(er)) * math.log(4 * h_mm / (0.67 * math.pi * d))
@@ -89,20 +100,37 @@ def load_stackup_config(config_path):
 
 
 def _build_net_targets(config):
+    """
+    critical_nets entries: {target_ohms, tolerance_ohms=5, differential=false}.
+    With differential: true the target and tolerance are given as Zdiff and
+    halved to the single-ended equivalent the calculator compares against.
+    """
+    targets = {}
     if config and "critical_nets" in config:
-        return {
-            net: (float(v["target_ohms"]), float(v.get("tolerance_ohms", 5)))
-            for net, v in config["critical_nets"].items()
-        }
-    return {}
+        for net, v in config["critical_nets"].items():
+            target = float(v["target_ohms"])
+            tol    = float(v.get("tolerance_ohms", 5))
+            if v.get("differential"):
+                target, tol = target / 2, tol / 2
+            targets[net] = (target, tol)
+    return targets
+
+
+# A keyword must be a whole name segment: preceded by a separator (or the
+# start) and not followed by a letter; trailing digits are allowed.  So "ETH"
+# matches "/ETH0_TX_P" but not "/METHANE", and "RF" not "/VREF_RFU".
+_DEFAULT_NET_PATTERNS = [
+    (re.compile(r"(?<![A-Z0-9])" + re.escape(key) + r"(?![A-Z])"), val)
+    for key, val in DEFAULT_CRITICAL_NETS.items()
+]
 
 
 def _match_net_target(net_name, net_targets):
     if net_name in net_targets:
         return net_targets[net_name]
     upper = net_name.upper()
-    for key, val in DEFAULT_CRITICAL_NETS.items():
-        if key.upper() in upper:
+    for pattern, val in _DEFAULT_NET_PATTERNS:
+        if pattern.search(upper):
             return val
     return None
 
@@ -131,7 +159,7 @@ def analyse_impedance(pcb, config_path=None) -> list:
     findings = []
     net_layer_widths = defaultdict(lambda: defaultdict(list))
 
-    for trace in pcb.traces:
+    for trace in list(pcb.traces) + list(pcb.arcs):
         if not trace.net or trace.net == "__unconnected__":
             continue
         if trace.width <= 0:
@@ -190,6 +218,7 @@ def analyse_impedance(pcb, config_path=None) -> list:
                         f"(avg trace width {avg_width:.3f} mm){hint}"
                     ),
                     affected_nets = (net_name,),
+                    key           = f"z0_mismatch:{net_name}:{layer}",
                 ))
             else:
                 findings.append(Finding(
@@ -200,6 +229,7 @@ def analyse_impedance(pcb, config_path=None) -> list:
                         f"Z0={z0}Ω ✓ (within {target_z}±{tol_z}Ω target)"
                     ),
                     affected_nets = (net_name,),
+                    key           = f"z0_ok:{net_name}:{layer}",
                 ))
 
     seen, deduped = set(), []

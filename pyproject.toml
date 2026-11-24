@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fluxlink"
+version = "0.1.0"
+description = "Semantic KiCad PCB diff review with an interactive board viewer and RAG chat over git history"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+dependencies = [
+    "click",
+    "numpy",
+    "opencv-python",
+    "cairosvg",
+    "flask",
+    "flask-cors",
+    "PyYAML",
+]
+
+[project.optional-dependencies]
+# Chat / RAG sub-system
+rag = [
+    "fastapi",
+    "uvicorn",
+    "pydantic",
+    "python-dotenv",
+    "openai",
+    "faiss-cpu",
+]
+dev = ["pytest"]
+
+[project.scripts]
+fluxlink = "fluxdiff.cli.main:main"
+
+[tool.setuptools.packages.find]
+include = ["fluxdiff*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

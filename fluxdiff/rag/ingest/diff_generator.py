@@ -101,7 +101,7 @@ class DiffGenerator:
         return DiffSummary(
             component_changes=diff.component_changes,
             net_changes=keep(diff.net_changes),
-            routing_changes=diff.routing_changes,
+            routing_changes=diff.routing_changes + diff.arc_changes + diff.zone_changes,
             power_tree=keep(diff.power_tree_changes),
             diff_pairs=keep(diff.diff_pair_changes),
             grounding=keep(diff.ground_changes),

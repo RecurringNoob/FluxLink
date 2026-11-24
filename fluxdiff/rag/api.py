@@ -7,34 +7,36 @@ Runs independently of the Flask viewer (viewer/server.py).
   This server  → port 8000  (RAG chat API)
 
 Endpoints:
-  POST /chat              — basic RAG query
-  POST /chat/filtered     — RAG query with metadata filters
-  GET  /health            — liveness probe
+  POST   /chat                    — RAG query
+  POST   /chat/filtered           — RAG query with metadata filters
+  DELETE /chat/session/{id}       — forget a conversation ("New chat")
+  GET    /health                  — liveness probe + indexed document count
+
+Both chat endpoints accept an optional session_id and return one; send it
+back on the next request to continue the same conversation.
 """
 
 import os
+from typing import Optional
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Dict, Any, Optional
 
 load_dotenv()
 
 from fluxdiff.rag.chat.chat_engine import ChatEngine
-from fluxdiff.rag.embedding.vector_store import VectorStore
+from fluxdiff.rag.llm.llm_client import LLMError
 from fluxdiff.rag.schemas import RAGQuery
 
 # ------------------------------------------------------------------
 # App setup
 # ------------------------------------------------------------------
 
-app = FastAPI(title="FluxDiff RAG API", version="1.0.0")
+app = FastAPI(title="FluxDiff RAG API", version="1.1.0")
 
-# Allow the Vite dev server and the Flask viewer to call this API.
-# Restrict origins in production via the FLUXDIFF_CORS_ORIGINS env var
-# (comma-separated list of allowed origins).
+# Restrict origins in production via FLUXDIFF_CORS_ORIGINS (comma-separated).
 _raw_origins = os.getenv(
     "FLUXDIFF_CORS_ORIGINS",
     "http://localhost:5173,http://localhost:3000,http://localhost:5000",
@@ -53,16 +55,36 @@ chat_engine = ChatEngine()
 
 
 # ------------------------------------------------------------------
-# Request / response models (Pydantic)
+# Request models
 # ------------------------------------------------------------------
+
+class Filters(BaseModel):
+    commit: Optional[str] = None   # full hash or prefix (≥ 4 chars)
+    type:   Optional[str] = None   # summary / component / net / routing / ...
+    file:   Optional[str] = None   # repository-relative .kicad_pcb path
+
 
 class ChatRequest(BaseModel):
     query: str
+    session_id: Optional[str] = None
 
 
-class FilteredChatRequest(BaseModel):
-    query: str
-    filters: Optional[Dict[str, Any]] = None
+class FilteredChatRequest(ChatRequest):
+    filters: Optional[Filters] = None
+
+
+def _respond(rag_query: RAGQuery, session_id: Optional[str]):
+    if not rag_query.query.strip():
+        raise HTTPException(status_code=422, detail="query must not be empty")
+    try:
+        response = chat_engine.ask_with_filters(rag_query, session_id=session_id)
+    except LLMError as e:
+        raise HTTPException(status_code=502, detail=f"LLM request failed: {e}")
+    return {
+        "answer":     response.answer,
+        "sources":    response.sources,
+        "session_id": response.session_id,
+    }
 
 
 # ------------------------------------------------------------------
@@ -71,38 +93,30 @@ class FilteredChatRequest(BaseModel):
 
 @app.post("/chat")
 def chat(req: ChatRequest):
-    """Basic RAG query — retrieves relevant documents and generates an answer."""
-    response = chat_engine.ask(req.query)
-    return {
-        "answer":  response.answer,
-        "sources": response.sources,
-    }
+    """RAG query — retrieves relevant documents and generates an answer."""
+    return _respond(RAGQuery(query=req.query), req.session_id)
 
 
 @app.post("/chat/filtered")
 def chat_filtered(req: FilteredChatRequest):
-    """
-    RAG query with optional metadata filters.
+    """RAG query restricted to documents matching every given filter."""
+    filters = {}
+    if req.filters:
+        dump = getattr(req.filters, "model_dump", None) or req.filters.dict  # pydantic v2 / v1
+        filters = dump(exclude_none=True)
+    return _respond(RAGQuery(query=req.query, filters=filters), req.session_id)
 
-    Supported filter keys:
-      commit — restrict to a specific commit hash
-      type   — restrict to a document type (summary / component / net /
-                routing / power_tree / diff_pair / grounding / impedance / bom)
-      file   — restrict to a specific PCB file path
-    """
-    rag_query = RAGQuery(query=req.query, filters=req.filters or {})
-    response  = chat_engine.ask_with_filters(rag_query)
-    return {
-        "answer":  response.answer,
-        "sources": response.sources,
-    }
+
+@app.delete("/chat/session/{session_id}")
+def reset_session(session_id: str):
+    chat_engine.reset_session(session_id)
+    return {"status": "ok"}
 
 
 @app.get("/health")
 def health():
-    """Liveness probe — also reports how many documents are indexed."""
-    store = VectorStore()
+    """Liveness probe — reports the documents the chat engine is serving."""
     return {
-        "status":           "ok",
-        "documents_indexed": len(store.documents),
+        "status":            "ok",
+        "documents_indexed": len(chat_engine.retriever.store),
     }

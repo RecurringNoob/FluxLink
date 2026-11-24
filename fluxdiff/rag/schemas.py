@@ -51,6 +51,7 @@ class DiffSummary:
     """
     component_changes: List[str] = field(default_factory=list)
     net_changes:       List[str] = field(default_factory=list)
+    # Segment, via, arc-track and copper-zone changes
     routing_changes:   List[str] = field(default_factory=list)
     power_tree:        List[str] = field(default_factory=list)
     diff_pairs:        List[str] = field(default_factory=list)
@@ -96,4 +97,6 @@ class ChatResponse:
     Final response returned to the caller / API.
     """
     answer: str
+    # Each source: {"commit", "file", "type", "date"?, "author"?}
     sources: List[Dict[str, Any]] = field(default_factory=list)
+    session_id: str = ""

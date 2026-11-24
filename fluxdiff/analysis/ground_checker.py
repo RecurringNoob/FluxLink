@@ -1,6 +1,7 @@
 from math import hypot
 from collections import defaultdict
 from fluxdiff.models.pcb_models import Finding
+from fluxdiff.analysis.net_names import has_ref_prefix
 
 GND_NET_SUBSTRINGS     = ("GND", "AGND", "DGND", "PGND", "EARTH", "VSS")
 ANALOG_GND_SUBSTRINGS  = ("AGND",)
@@ -19,7 +20,7 @@ DIGITAL_VALUE_SUBSTRINGS = (
     "FPGA", "CPLD", "FIFO", "74HC", "74LS",
 )
 FERRITE_VALUE_SUBSTRINGS = ("FERRITE", "FB", "CMC", "BEAD")
-FERRITE_REF_PREFIXES     = ("FB", "L", "Z")
+FERRITE_REF_PREFIXES     = ("FB", "L")
 POWER_SYMBOL_PREFIXES    = ("#PWR", "#FLG")
 
 ADC_GND_PROXIMITY_MM = 10.0
@@ -54,7 +55,7 @@ def _is_digital_ic(comp):
 def _is_ferrite(comp):
     return (
         any(s in comp.value.upper() for s in FERRITE_VALUE_SUBSTRINGS) or
-        any(comp.ref.upper().startswith(p) for p in FERRITE_REF_PREFIXES)
+        has_ref_prefix(comp.ref, FERRITE_REF_PREFIXES)
     )
 
 def _distance(ax, ay, bx, by):
@@ -155,6 +156,7 @@ def _check_analog_digital_mix(graph, pcb) -> list:
                 ),
                 related_refs  = tuple(sorted(analog_refs + digital_refs)),
                 affected_nets = (gnd_net,),
+                key           = f"analog_digital_mix:{gnd_net}",
             ))
     return findings
 

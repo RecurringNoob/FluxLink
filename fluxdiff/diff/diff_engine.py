@@ -101,10 +101,14 @@ def _severity_key(f) -> int:
 def _tag(old_set: set, new_set: set, dest_str: list, dest_findings: list,
          prefix: str = ""):
     pre = f"{prefix} " if prefix else ""
+    order = lambda f: (_severity_key(f), f.message)
 
-    new_only = sorted(new_set - old_set,  key=lambda f: (_severity_key(f), f.message))
-    both     = sorted(new_set & old_set,  key=lambda f: (_severity_key(f), f.message))
-    old_only = sorted(old_set - new_set,  key=lambda f: (_severity_key(f), f.message))
+    # Iterate new_set (not `new_set & old_set`) for EXISTING: set intersection
+    # returns elements from whichever operand is smaller, which could hand back
+    # the OLD board's finding with stale coordinates and message text.
+    new_only = sorted((f for f in new_set if f not in old_set), key=order)
+    both     = sorted((f for f in new_set if f in old_set),     key=order)
+    old_only = sorted((f for f in old_set if f not in new_set), key=order)
 
     # Findings are copied with their status set (Finding is frozen).  FIXED
     # findings are included so the viewer can list them with a FIXED badge;
@@ -270,6 +274,15 @@ def _pos_equal(p1, p2, tol):
     return math.hypot(p1[0]-p2[0], p1[1]-p2[1]) <= tol
 
 
+def _rotation_delta(a, b):
+    """Smallest angle between two rotations: 359° vs 0° is 1°, not 359°."""
+    return abs((a - b + 180.0) % 360.0 - 180.0)
+
+
+def _pos(comp):
+    return {"x": comp.x, "y": comp.y}
+
+
 def component_diff(old_pcb, new_pcb, result):
     old_map, old_amb, old_key = _build_component_map(old_pcb.components)
     new_map, new_amb, new_key = _build_component_map(new_pcb.components)
@@ -285,11 +298,22 @@ def component_diff(old_pcb, new_pcb, result):
     ambiguous = old_amb | new_amb
     shared = sorted(old_map.keys() & new_map.keys())
     added, removed, modified, modified_keys = [], [], [], set()
+    # Structured twin of the strings, with board positions, for the viewer.
+    det_added, det_removed, det_swapped, det_modified = [], [], [], []
+
+    def detail(kind, ref, message, old=None, new=None):
+        return {"type": kind, "ref": ref, "message": message,
+                "from": _pos(old) if old else None,
+                "to":   _pos(new) if new else None}
 
     for key in sorted(new_map.keys() - old_map.keys()):
-        added.append(f"Component added: {_label(new_map[key], ambiguous)}")
+        msg = f"Component added: {_label(new_map[key], ambiguous)}"
+        added.append(msg)
+        det_added.append(detail("added", new_map[key].ref, msg, new=new_map[key]))
     for key in sorted(old_map.keys() - new_map.keys()):
-        removed.append(f"Component removed: {_label(old_map[key], ambiguous)}")
+        msg = f"Component removed: {_label(old_map[key], ambiguous)}"
+        removed.append(msg)
+        det_removed.append(detail("removed", old_map[key].ref, msg, old=old_map[key]))
 
     old_pos = {k: (old_map[k].x, old_map[k].y) for k in shared}
     new_pos = {k: (new_map[k].x, new_map[k].y) for k in shared}
@@ -305,42 +329,45 @@ def component_diff(old_pcb, new_pcb, result):
                         and _pos_equal(new_pos[kb], old_pos[ka], MOVE_THRESHOLD)):
                     la, lb = sorted([_label(old_map[ka], ambiguous),
                                      _label(old_map[kb], ambiguous)])
-                    swap_msgs.append(f"Components swapped positions: {la} <-> {lb}")
+                    msg = f"Components swapped positions: {la} <-> {lb}"
+                    swap_msgs.append(msg)
+                    det_swapped.append(detail(
+                        "swapped", f"{old_map[ka].ref}, {old_map[kb].ref}", msg,
+                        old=old_map[ka], new=new_map[ka]))
                     swapped.update([ka, kb])
                     break
 
     for key in shared:
         oc, nc = old_map[key], new_map[key]
         lbl = _label(nc, ambiguous)
-        changed = False
+        changes = []
         if old_key == "uuid" and oc.ref != nc.ref:
-            modified.append(f"Component re-annotated: {oc.ref} -> {nc.ref} [uuid:{nc.uuid[:8]}]")
-            changed = True
+            changes.append(("annotated",
+                f"Component re-annotated: {oc.ref} -> {nc.ref} [uuid:{nc.uuid[:8]}]"))
         if math.hypot(oc.x-nc.x, oc.y-nc.y) > MOVE_THRESHOLD and key not in swapped:
-            modified.append(
-                f"Component moved: {lbl} ({oc.x:.3f},{oc.y:.3f}) -> ({nc.x:.3f},{nc.y:.3f})"
-            )
-            changed = True
+            changes.append(("moved",
+                f"Component moved: {lbl} ({oc.x:.3f},{oc.y:.3f}) -> ({nc.x:.3f},{nc.y:.3f})"))
         if oc.value != nc.value:
-            modified.append(f"Component value changed: {lbl} [{oc.value}] -> [{nc.value}]")
-            changed = True
+            changes.append(("value",
+                f"Component value changed: {lbl} [{oc.value}] -> [{nc.value}]"))
         if oc.footprint != nc.footprint:
-            modified.append(
-                f"Component footprint changed: {lbl} {oc.footprint} -> {nc.footprint}"
-            )
-            changed = True
+            changes.append(("footprint",
+                f"Component footprint changed: {lbl} {oc.footprint} -> {nc.footprint}"))
         if oc.layer != nc.layer:
-            modified.append(f"Component layer changed: {lbl} {oc.layer} -> {nc.layer}")
-            changed = True
-        if abs(oc.rotation - nc.rotation) > ROT_THRESHOLD:
-            modified.append(
-                f"Component rotation changed: {lbl} {oc.rotation}° -> {nc.rotation}°"
-            )
-            changed = True
-        if changed:
+            changes.append(("layer",
+                f"Component layer changed: {lbl} {oc.layer} -> {nc.layer}"))
+        if _rotation_delta(oc.rotation, nc.rotation) > ROT_THRESHOLD:
+            changes.append(("rotation",
+                f"Component rotation changed: {lbl} {oc.rotation}° -> {nc.rotation}°"))
+        for kind, msg in changes:
+            modified.append(msg)
+            det_modified.append(detail(kind, nc.ref, msg, old=oc, new=nc))
+        if changes:
             modified_keys.add(key)
 
     result.component_changes.extend(added + removed + swap_msgs + modified)
+    result.component_change_details.extend(
+        det_added + det_removed + det_swapped + det_modified)
     n_swap_pairs = len(swapped) // 2
     return {
         "added":     len(added),

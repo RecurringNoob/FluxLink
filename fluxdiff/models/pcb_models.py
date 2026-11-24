@@ -118,22 +118,35 @@ class PCBData:
 #   highlight_refs — all refs whose markers should pulse when this finding
 #                    is selected (may include refs not in related_refs, e.g.
 #                    both legs of a diff pair)
+#   key           — stable identity used to match a finding between the old
+#                   and new board.  Defaults to the message.  Checks whose
+#                   message contains measured values (lengths, Z0, counts,
+#                   ref lists) pass an explicit key without those values.
+#
+# Identity: two findings are "the same" when severity, category, key and
+# affected_nets match.  message, related_refs, coordinates and
+# highlight_refs are display data and are excluded from __eq__/__hash__ —
+# otherwise moving a part 0.1 mm, or re-routing a diff pair, made an
+# unchanged issue show up as both FIXED and NEW.
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
 class Finding:
     severity: str
     category: str
-    message: str
-    related_refs: Tuple[str, ...] = ()
+    message: str = field(compare=False)
+    related_refs: Tuple[str, ...] = field(default=(), compare=False)
     affected_nets: Tuple[str, ...] = ()
-    coordinates: Optional[Tuple[float, float]] = None
-    highlight_refs: Tuple[str, ...] = ()
+    coordinates: Optional[Tuple[float, float]] = field(default=None, compare=False)
+    highlight_refs: Tuple[str, ...] = field(default=(), compare=False)
     # Diff status relative to the old board: "NEW", "EXISTING" or "FIXED"
-    # (empty for findings produced outside a diff).  compare=False keeps it out
-    # of __eq__/__hash__, so the old/new set arithmetic in diff_engine._tag
-    # still treats "the same finding" as equal regardless of status.
+    # (empty for findings produced outside a diff).
     status: str = field(default="", compare=False)
+    key: str = ""
+
+    def __post_init__(self):
+        if not self.key:
+            object.__setattr__(self, "key", self.message)
 
     def __str__(self) -> str:
         """Backward-compatible string representation matches the old list[str] format."""
@@ -175,7 +188,10 @@ class DiffResult:
     bom_changes: List[str] = field(default_factory=list)
     bom_findings: List[Finding] = field(default_factory=list)
     erc_findings: List[Finding] = field(default_factory=list)
-    component_findings: List[Finding] = field(default_factory=list)
+    # One dict per component change, parallel to component_changes:
+    #   {"type", "ref", "message", "from": {"x","y"}|None, "to": {"x","y"}|None}
+    # Positions are KiCad mm on the old ("from") and new ("to") board.
+    component_change_details: List[dict] = field(default_factory=list)
     # Arc routing changes (gr_arc on copper layers)
     arc_changes: List[str] = field(default_factory=list)
     # Zone / copper-pour changes

@@ -18,9 +18,61 @@ Document types emitted:
   bom           — if diff.bom is non-empty
 """
 
+from dataclasses import replace
 from typing import List
 
 from fluxdiff.rag.schemas import RAGDocument, CommitInfo, DiffSummary
+
+# text-embedding-3-* accept 8,191 tokens per input.  Code and diff lines run
+# at roughly 3 characters per token, so 16k characters leaves a safe margin.
+MAX_CHUNK_CHARS = 16_000
+
+
+def chunk_documents(documents: List[RAGDocument],
+                    max_chars: int = MAX_CHUNK_CHARS) -> List[RAGDocument]:
+    """
+    Split documents longer than max_chars on line boundaries.  Each chunk
+    repeats the document's header lines (Commit / Type / File, up to the
+    first blank line or "Changes:") so it can still be cited on its own, and
+    carries chunk / chunks metadata.
+    """
+    out: List[RAGDocument] = []
+    for doc in documents:
+        if len(doc.content) <= max_chars:
+            out.append(doc)
+            continue
+
+        lines = doc.content.split("\n")
+        header_len = 0
+        for i, line in enumerate(lines[:8]):
+            if not line.strip() or line.startswith("Changes:"):
+                header_len = i + 1
+                break
+        header = "\n".join(lines[:header_len])
+        budget = max(max_chars - len(header) - 1, max_chars // 2)
+
+        bodies, cur, size = [], [], 0
+        for line in lines[header_len:]:
+            # A single over-long line is hard-split.
+            while len(line) > budget:
+                if cur:
+                    bodies.append(cur)
+                    cur, size = [], 0
+                bodies.append([line[:budget]])
+                line = line[budget:]
+            if cur and size + len(line) + 1 > budget:
+                bodies.append(cur)
+                cur, size = [], 0
+            cur.append(line)
+            size += len(line) + 1
+        if cur:
+            bodies.append(cur)
+
+        for n, body in enumerate(bodies, start=1):
+            text = (header + "\n" if header else "") + "\n".join(body)
+            meta = dict(doc.metadata, chunk=n, chunks=len(bodies))
+            out.append(replace(doc, content=text, metadata=meta))
+    return out
 
 
 class DocumentBuilder:

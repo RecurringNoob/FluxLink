@@ -1,0 +1,41 @@
+/*
+ * Tailwind v4 for the chat page only.
+ *
+ * Tailwind's global reset (preflight) is deliberately NOT imported: it would
+ * restyle the board viewer (img/button/svg defaults).  A minimal reset scoped
+ * to .fluxlink-chat replaces it.
+ */
+@layer theme, base, components, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
+
+/* ChatApp toggles a `dark` class on <html>; make dark: follow that class
+   instead of the OS colour-scheme media query. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+@layer base {
+  .fluxlink-chat,
+  .fluxlink-chat *,
+  .fluxlink-chat ::before,
+  .fluxlink-chat ::after {
+    box-sizing: border-box;
+    border: 0 solid;
+    margin: 0;
+    padding: 0;
+  }
+  .fluxlink-chat {
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    line-height: 1.5;
+  }
+  .fluxlink-chat button,
+  .fluxlink-chat textarea {
+    font: inherit;
+    color: inherit;
+    background-color: transparent;
+  }
+  .fluxlink-chat button:not(:disabled) { cursor: pointer; }
+  .fluxlink-chat svg { display: block; }
+  .fluxlink-chat h1,
+  .fluxlink-chat h2,
+  .fluxlink-chat h3 { font-size: inherit; font-weight: inherit; }
+}

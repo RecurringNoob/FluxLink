@@ -50,6 +50,7 @@ def get_diff():
     return jsonify({
         # ---- existing plain-string lists (text report, unchanged) ----
         "components":        diff_result.component_changes,
+        "component_details": diff_result.component_change_details,
         "nets":              diff_result.net_changes,
         "routing":           diff_result.routing_changes,
         "arcs":              diff_result.arc_changes,
@@ -146,14 +147,21 @@ def images(filename):
 # Root — in production, serve the Vite build; in dev, redirect to Vite
 # ---------------------------------------------------------------------------
 
-FRONTEND_BUILD = os.path.join(os.path.dirname(__file__), "frontend", "dist")
+# The React app lives in fluxdiff-ui/fluxlink at the repository root.  Build it
+# with `npm run build` there, or point FLUXLINK_FRONTEND_DIST at another build.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+FRONTEND_BUILD = os.getenv(
+    "FLUXLINK_FRONTEND_DIST",
+    os.path.join(_REPO_ROOT, "fluxdiff-ui", "fluxlink", "dist"),
+)
+VITE_DEV_URL = "http://localhost:5173"
 
 
 @app.route("/", defaults={"path": ""})
 @app.route("/<path:path>")
 def serve_frontend(path):
     """
-    Production: serve the Vite build from viewer/frontend/dist/.
+    Production: serve the Vite build from FRONTEND_BUILD.
     Dev: the Vite dev server runs on :5173 and proxies /api → :5000,
          so this route is only hit for non-API paths in production.
     """
@@ -165,8 +173,11 @@ def serve_frontend(path):
     # Dev fallback — tell the user to open Vite instead
     return (
         "<h2>FluxDiff API running on :5000</h2>"
-        "<p>Open <a href='http://localhost:5173'>http://localhost:5173</a> "
-        "for the React viewer (Vite dev server).</p>",
+        f"<p>No frontend build found at <code>{FRONTEND_BUILD}</code>.</p>"
+        f"<p>Run <code>npm install &amp;&amp; npm run dev</code> in "
+        f"<code>fluxdiff-ui/fluxlink</code> and open "
+        f"<a href='{VITE_DEV_URL}'>{VITE_DEV_URL}</a>, or "
+        f"<code>npm run build</code> to have this server serve it.</p>",
         200,
     )
 
@@ -178,9 +189,9 @@ def serve_frontend(path):
 def run_viewer_server(diff_result=None, power_tree_report=""):
     app.config["DIFF_RESULT"]        = diff_result
     app.config["POWER_TREE_REPORT"]  = power_tree_report
-    threading.Timer(
-        1, lambda: webbrowser.open("http://localhost:5173")
-    ).start()
+    # Open the built app on :5000 when it exists, otherwise the Vite dev server.
+    url = "http://localhost:5000" if os.path.isdir(FRONTEND_BUILD) else VITE_DEV_URL
+    threading.Timer(1, lambda: webbrowser.open(url)).start()
     app.run(host="localhost", port=5000, use_reloader=False)
 
 

@@ -2,7 +2,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Set, Optional
 from math import hypot
 from fluxdiff.models.pcb_models import Finding
-from fluxdiff.analysis.net_names import is_voltage_rail_name
+from fluxdiff.analysis.net_names import is_voltage_rail_name, has_ref_prefix
 
 REGULATOR_PREFIXES = ("U", "VR", "IC", "REG", "LDO")
 REGULATOR_VALUE_SUBSTRINGS = (
@@ -45,17 +45,19 @@ class PowerTree:
 def _is_power_symbol(ref):
     return any(ref.upper().startswith(p) for p in POWER_SYMBOL_PREFIXES)
 
+# Exact prefixes: "B1"/"BT1" are batteries, "BZ1"/"BTN1" are not; "X1" is a
+# connector (IEC convention) but "XTAL1" is not.
 def _is_connector(comp):
-    return any(comp.ref.upper().startswith(p) for p in CONNECTOR_PREFIXES)
+    return has_ref_prefix(comp.ref, CONNECTOR_PREFIXES)
 
 def _is_battery(comp):
-    return any(comp.ref.upper().startswith(p) for p in BATTERY_PREFIXES)
+    return has_ref_prefix(comp.ref, BATTERY_PREFIXES)
 
 def _is_power_source(comp):
     return _is_connector(comp) or _is_battery(comp)
 
 def _is_ic_load(comp):
-    return any(comp.ref.upper().startswith(p) for p in ("U", "IC", "AR"))
+    return has_ref_prefix(comp.ref, ("U", "IC", "AR"))
 
 def _net_is_power(net_name):
     return (any(sub in net_name.upper() for sub in POWER_NET_SUBSTRINGS)
@@ -69,10 +71,9 @@ def _real_refs(connections):
 
 
 def _is_known_regulator(comp) -> bool:
-    ref_upper = comp.ref.upper()
-    if any(ref_upper.startswith(p) for p in ("VR", "REG", "LDO")):
+    if has_ref_prefix(comp.ref, ("VR", "REG", "LDO")):
         return True
-    if any(ref_upper.startswith(p) for p in ("U", "IC")):
+    if has_ref_prefix(comp.ref, ("U", "IC")):
         val_upper = comp.value.upper()
         fp_upper  = comp.footprint.upper()
         if any(s in val_upper for s in REGULATOR_VALUE_SUBSTRINGS):
@@ -138,7 +139,7 @@ def build_power_tree(pcb, graph):
         if _is_known_regulator(comp):
             regulator_refs.add(ref)
             continue
-        if any(comp.ref.upper().startswith(p) for p in ("U", "IC")):
+        if has_ref_prefix(comp.ref, ("U", "IC")):
             input_nets, output_nets = _infer_regulator_roles(comp, graph)
             input_nets  = list(dict.fromkeys(input_nets))
             output_nets = list(dict.fromkeys(output_nets))
@@ -221,6 +222,7 @@ def _findings_sourceless_rails(tree) -> list:
                     f"but no source — floating supply rail"
                 ),
                 affected_nets = (net_name,),
+                key           = f"sourceless_rail:{net_name}",
             ))
     return findings
 
@@ -237,6 +239,7 @@ def _findings_load_advisory(tree) -> list:
                     f"verify current budget"
                 ),
                 affected_nets = (net_name,),
+                key           = f"load_advisory:{net_name}",
             ))
     return findings
 

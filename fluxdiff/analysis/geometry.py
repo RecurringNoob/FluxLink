@@ -11,7 +11,7 @@ unenriched on a test board, leaving the connectivity graph severely incomplete.
 nets within 2mm would be caught by the net= filter anyway).
 """
 
-from math import hypot
+from math import hypot, asin, pi
 
 TOLERANCE = 2.0  # mm — raised from 0.8 to capture real board routing
 
@@ -54,3 +54,27 @@ def find_nearest_pad(point, pad_index, net=None):
             best = (ref, pad_num)
 
     return best if best_dist <= TOLERANCE else None
+
+def arc_length(start, mid, end):
+    """
+    Length of the three-point arc start -> mid -> end (KiCad arc tracks).
+    Falls back to the chord path when the points are collinear.
+    """
+    (ax, ay), (bx, by), (cx, cy) = start, mid, end
+    d = 2 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by))
+    if abs(d) < 1e-12:
+        return distance(start, mid) + distance(mid, end)
+    ux = ((ax**2 + ay**2) * (by - cy) + (bx**2 + by**2) * (cy - ay)
+          + (cx**2 + cy**2) * (ay - by)) / d
+    uy = ((ax**2 + ay**2) * (cx - bx) + (bx**2 + by**2) * (ax - cx)
+          + (cx**2 + cy**2) * (bx - ax)) / d
+    r = hypot(ax - ux, ay - uy)
+    chord = distance(start, end)
+    # Central angle from the chord; the arc is the major one when mid lies on
+    # the far side of the chord from the centre.
+    theta = 2 * asin(min(1.0, chord / (2 * r)))
+    cross_mid = (cx - ax) * (by - ay) - (cy - ay) * (bx - ax)
+    cross_ctr = (cx - ax) * (uy - ay) - (cy - ay) * (ux - ax)
+    if cross_mid * cross_ctr > 0:
+        theta = 2 * pi - theta
+    return r * theta

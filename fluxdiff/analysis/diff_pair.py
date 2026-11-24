@@ -1,6 +1,9 @@
+import re
 from math import hypot
 from collections import defaultdict
 from fluxdiff.models.pcb_models import Finding
+from fluxdiff.analysis.geometry import arc_length
+from fluxdiff.analysis.net_names import net_tokens
 
 LENGTH_MISMATCH_THRESHOLD_MM   = 0.5
 VIA_COUNT_MISMATCH             = 1
@@ -17,7 +20,23 @@ DIFF_PAIR_SUFFIXES = [
 ]
 
 
+# Tokens that mark a net as part of a differential interface.  A lone "_N"
+# net is only reported as a missing pair half when its name contains one of
+# these, so active-low signals (RESET_N, CS_N, OE_N) are left alone.
+_DIFF_INTERFACE_TOKEN = re.compile(
+    r"^(?:USB\d*|LVDS|HDMI|TMDS|ETH\d*|MIPI|CSI\d*|DSI\d*|PCIE\d*|SATA\d*|"
+    r"CLK\d*|REFCLK\d*|TX\d*|RX\d*|TXD\d*|RXD\d*|LANE\d*|D\d+|DP|DN)$"
+)
+
+
+def _looks_differential(base: str) -> bool:
+    return any(_DIFF_INTERFACE_TOKEN.match(t) for t in net_tokens(base))
+
+
 def _trace_length(trace):
+    # Arc tracks (with a mid point) count their true arc length.
+    if getattr(trace, "mid", None) is not None:
+        return arc_length(trace.start, trace.mid, trace.end)
     return hypot(trace.end[0] - trace.start[0], trace.end[1] - trace.start[1])
 
 def _net_total_length(traces):
@@ -76,6 +95,7 @@ def _check_length_mismatch(p_net, n_net, traces_by_net) -> list:
                 f"exceeds {LENGTH_MISMATCH_THRESHOLD_MM} mm threshold"
             ),
             affected_nets = (p_net, n_net),
+            key           = f"length_mismatch:{p_net}/{n_net}",
         ))
     return findings
 
@@ -94,6 +114,7 @@ def _check_via_asymmetry(p_net, n_net, vias) -> list:
                 f"(P={p_vias}, N={n_vias}) — asymmetric via count affects impedance"
             ),
             affected_nets = (p_net, n_net),
+            key           = f"via_mismatch:{p_net}/{n_net}",
         ))
     elif delta == VIA_COUNT_MISMATCH:
         findings.append(Finding(
@@ -104,6 +125,7 @@ def _check_via_asymmetry(p_net, n_net, vias) -> list:
                 f"(P={p_vias}, N={n_vias}) — verify intentional"
             ),
             affected_nets = (p_net, n_net),
+            key           = f"via_mismatch:{p_net}/{n_net}",
         ))
     return findings
 
@@ -125,50 +147,47 @@ def _check_layer_asymmetry(p_net, n_net, traces_by_net) -> list:
                 f"asymmetric layers cause impedance discontinuity"
             ),
             affected_nets = (p_net, n_net),
+            key           = f"layer_asymmetry:{p_net}/{n_net}",
         ))
     return findings
 
 
 def _check_unpaired_diff_nets(net_names, paired_nets) -> list:
-    findings       = []
+    findings  = []
+    upper_set = {n.upper() for n in net_names}
     strong_suffixes = [("_P", "_N"), ("_DP", "_DN")]
     for net in sorted(net_names):
         if net in paired_nets:
             continue
         upper = net.upper()
         for p_suf, n_suf in strong_suffixes:
-            if upper.endswith(p_suf.upper()):
-                base    = net[: -len(p_suf)]
-                partner = base + n_suf
-                if partner.upper() not in {n.upper() for n in net_names}:
-                    findings.append(Finding(
-                        severity      = "INFO",
-                        category      = CAT,
-                        message       = (
-                            f"Net '{net}' looks like a differential P-net "
-                            f"but partner '{partner}' not found in netlist"
-                        ),
-                        affected_nets = (net,),
-                    ))
-            elif upper.endswith(n_suf.upper()):
-                base    = net[: -len(n_suf)]
-                partner = base + p_suf
-                if partner.upper() not in {n.upper() for n in net_names}:
-                    findings.append(Finding(
-                        severity      = "INFO",
-                        category      = CAT,
-                        message       = (
-                            f"Net '{net}' looks like a differential N-net "
-                            f"but partner '{partner}' not found in netlist"
-                        ),
-                        affected_nets = (net,),
-                    ))
+            if upper.endswith(p_suf):
+                side, base, partner = "P", net[: -len(p_suf)], net[: -len(p_suf)] + n_suf
+            elif upper.endswith(n_suf):
+                side, base, partner = "N", net[: -len(n_suf)], net[: -len(n_suf)] + p_suf
+            else:
+                continue
+            # Bare _P/_N is ambiguous (RESET_N, CS_N are active-low, not
+            # differential); require a differential-interface token in the name.
+            if p_suf == "_P" and not _looks_differential(base):
+                continue
+            if partner.upper() not in upper_set:
+                findings.append(Finding(
+                    severity      = "INFO",
+                    category      = CAT,
+                    message       = (
+                        f"Net '{net}' looks like a differential {side}-net "
+                        f"but partner '{partner}' has no routing"
+                    ),
+                    affected_nets = (net,),
+                ))
+            break
     return findings
 
 
 def analyse_diff_pairs(pcb) -> list:
     traces_by_net = defaultdict(list)
-    for trace in pcb.traces:
+    for trace in list(pcb.traces) + list(pcb.arcs):
         if trace.net and trace.net != "__unconnected__":
             traces_by_net[trace.net].append(trace)
 
@@ -181,8 +200,6 @@ def analyse_diff_pairs(pcb) -> list:
             active_nets.add(via.net)
 
     pairs = _find_diff_pairs(active_nets)
-    if not pairs:
-        return []
 
     paired_nets = {net for pair in pairs for net in pair}
     findings    = []

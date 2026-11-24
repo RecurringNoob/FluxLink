@@ -1,5 +1,8 @@
 import { useState, useRef, useEffect } from "react";
 import type { JSX } from "react";
+import "./chat.css";
+
+const API_URL: string = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
 
 // ─── Icons ────────────────────────────────────────────────────────────────────
 
@@ -79,10 +82,20 @@ const SquareIcon = (props: IconProps): JSX.Element => (
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
+// Matches the sources returned by fluxdiff/rag/chat/chat_engine.py.
 interface Source {
-  commit_id?: string;
-  file_name?: string;
-  filename?: string;
+  commit?: string;
+  file?: string;
+  type?: string;
+  date?: string;
+  author?: string;
+}
+
+interface ChatApiResponse {
+  answer?: string;
+  sources?: Source[];
+  session_id?: string;
+  detail?: string;
 }
 
 interface Message {
@@ -91,11 +104,6 @@ interface Message {
   content: string;
   sources?: Source[];
   isNew: boolean;
-}
-
-interface HistoryItem {
-  id: string;
-  title: string;
 }
 
 // ─── TypewriterText ───────────────────────────────────────────────────────────
@@ -169,12 +177,19 @@ function SourcesPanel({ sources }: SourcesPanelProps): JSX.Element | null {
           {sources.map((source, idx) => (
             <div key={idx} className="flex flex-col gap-1 rounded-md border border-zinc-200 dark:border-zinc-700/50 bg-white/50 dark:bg-zinc-800/50 p-2.5">
               <div className="flex items-center gap-2">
-                <span className="font-mono text-[10px] bg-zinc-100 dark:bg-zinc-900 px-1.5 py-0.5 rounded text-zinc-600 dark:text-zinc-400">
-                  {source.commit_id ? source.commit_id.substring(0, 7) : "commit"}
-                </span>
+                {source.commit && (
+                  <span className="font-mono text-[10px] bg-zinc-100 dark:bg-zinc-900 px-1.5 py-0.5 rounded text-zinc-600 dark:text-zinc-400" title={source.commit}>
+                    {source.commit.substring(0, 7)}
+                  </span>
+                )}
                 <span className="text-xs font-medium font-mono text-blue-600 dark:text-blue-400 truncate">
-                  {source.file_name ?? source.filename}
+                  {source.file ?? "repository"}
                 </span>
+                {source.type && (
+                  <span className="ml-auto text-[10px] uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+                    {source.type.replace("_", " ")}
+                  </span>
+                )}
               </div>
             </div>
           ))}
@@ -185,12 +200,6 @@ function SourcesPanel({ sources }: SourcesPanelProps): JSX.Element | null {
 }
 
 // ─── ChatApp ──────────────────────────────────────────────────────────────────
-
-const MOCK_HISTORY: HistoryItem[] = [
-  { id: "1", title: "Reviewing PCB layout" },
-  { id: "2", title: "Routing impedance check" },
-  { id: "3", title: "Fix DRC errors" },
-];
 
 const INITIAL_MESSAGE: Message = {
   id: 1,
@@ -208,6 +217,8 @@ export function ChatApp(): JSX.Element {
   const [abortController, setAbortController] = useState<AbortController | null>(null);
   const [isAnimating, setIsAnimating] = useState(false);
   const [isStopped, setIsStopped] = useState(false);
+  // Server-side conversation memory is keyed by this id (see rag/api.py).
+  const [sessionId, setSessionId] = useState<string | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -234,6 +245,12 @@ export function ChatApp(): JSX.Element {
 
   const handleClearChat = () => {
     setIsSidebarOpen(false);
+    if (sessionId) {
+      // Forget the conversation on the server too; failures are harmless.
+      void fetch(`${API_URL}/chat/session/${encodeURIComponent(sessionId)}`, { method: "DELETE" })
+        .catch(() => undefined);
+      setSessionId(null);
+    }
     setMessages([
       {
         id: Date.now(),
@@ -265,21 +282,19 @@ export function ChatApp(): JSX.Element {
     const controller = new AbortController();
     setAbortController(controller);
 
-    const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
-
     try {
       const response = await fetch(`${API_URL}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         signal: controller.signal,
-        body: JSON.stringify({ query }),
+        body: JSON.stringify({ query, session_id: sessionId }),
       });
 
+      const data = await response.json().catch(() => ({})) as ChatApiResponse;
       if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+        throw new Error(data.detail ?? `HTTP ${response.status}`);
       }
-
-      const data = await response.json() as { answer?: string; sources?: Source[] };
+      if (data.session_id) setSessionId(data.session_id);
 
       const newAssistantMessage: Message = {
         id: Date.now() + 1,
@@ -296,10 +311,11 @@ export function ChatApp(): JSX.Element {
         console.log("Fetch aborted");
       } else {
         console.error("Error fetching chat response:", error);
+        const reason = error instanceof Error ? error.message : String(error);
         const errorMessage: Message = {
           id: Date.now() + 1,
           role: "assistant",
-          content: "Sorry, I encountered an error connecting to the server. Please try again.",
+          content: `Sorry, the request failed (${reason}). Check that the chat API is running on ${API_URL} and try again.`,
           isNew: true,
         };
         setMessages((prev) => [...prev, errorMessage]);
@@ -315,14 +331,12 @@ export function ChatApp(): JSX.Element {
       abortController.abort();
     }
 
+    // Replace the last message instead of mutating the previous state object.
     setMessages((prev) => {
-      const newMessages = [...prev];
-      const lastMsg = newMessages[newMessages.length - 1];
-      if (lastMsg && lastMsg.role === "assistant") {
-        lastMsg.content = partialContentRef.current;
-        lastMsg.isNew = false;
-      }
-      return newMessages;
+      const lastMsg = prev[prev.length - 1];
+      if (!lastMsg || lastMsg.role !== "assistant" || !lastMsg.isNew) return prev;
+      return [...prev.slice(0, -1),
+              { ...lastMsg, content: partialContentRef.current, isNew: false }];
     });
 
     setIsStopped(true);
@@ -339,7 +353,7 @@ export function ChatApp(): JSX.Element {
   };
 
   return (
-    <div className="flex h-screen w-full overflow-hidden bg-white dark:bg-zinc-900 font-sans">
+    <div className="fluxlink-chat flex h-screen w-full overflow-hidden bg-white dark:bg-zinc-900 font-sans">
 
       {/* Mobile Sidebar Overlay */}
       {isSidebarOpen && (
@@ -388,27 +402,16 @@ export function ChatApp(): JSX.Element {
               <span className="truncate">Current Conversation</span>
             </button>
           </div>
-
-          <p className="text-xs font-semibold text-zinc-500 mb-2 mt-6 px-2 tracking-wide">Previous 7 Days</p>
-          <div className="space-y-0.5">
-            {MOCK_HISTORY.map((item) => (
-              <button
-                key={item.id}
-                className="w-full text-left flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-white/5 text-sm text-zinc-400 hover:text-zinc-200 transition-colors"
-                title={item.title}
-              >
-                <MessageSquareIcon className="h-4 w-4 shrink-0 opacity-50" />
-                <span className="truncate">{item.title}</span>
-              </button>
-            ))}
-          </div>
         </div>
 
         <div className="p-3 mt-auto border-t border-white/10">
-          <button className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-white/5 text-sm text-zinc-400 hover:text-zinc-200 transition-colors">
-            <UserIcon className="h-4 w-4" />
-            User Settings
-          </button>
+          <a
+            href="/"
+            className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-white/5 text-sm text-zinc-400 hover:text-zinc-200 transition-colors"
+          >
+            <MessageSquareIcon className="h-4 w-4" />
+            Back to board viewer
+          </a>
         </div>
       </aside>
 

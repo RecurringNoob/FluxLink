@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { TransformWrapper, TransformComponent, useTransformComponent } from "react-zoom-pan-pinch";
 import type { ReactZoomPanPinchRef } from "react-zoom-pan-pinch";
 import { fetchDiff, BOARD_URLS } from "../api";
-import type { Finding, FindingStatus, ViewMode, DiffResponse, BoardBounds, Severity } from "../types/finding";
+import type { Finding, FindingStatus, ViewMode, DiffResponse, BoardBounds, Severity, ComponentChangeDetail } from "../types/finding";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -50,7 +50,8 @@ interface ComponentChange {
   type: "added" | "removed" | "moved" | "value" | "footprint" | "layer" | "rotation" | "swapped" | "reconnected" | "disconnected" | "annotated";
   ref: string;
   message: string;
-  // For moved/swapped we try to extract coordinates from the message
+  // Board positions (KiCad mm): from component_details, or parsed from the
+  // message for "moved" when talking to an older server.
   fromPos?: { x: number; y: number };
   toPos?: { x: number; y: number };
 }
@@ -1409,9 +1410,21 @@ export default function App() {
 
   const compChanges: ComponentChange[] = useMemo(() => {
     if (!data) return [];
-    // Combine component_changes + net_changes that reference component pads
-    const raw = [...(data.components ?? []), ...(data.nets ?? [])];
-    return parseComponentChanges(raw);
+    // Pad net changes still come from the net_changes strings.
+    const padChanges = parseComponentChanges(data.nets ?? []);
+    if (data.component_details) {
+      // Structured changes carry positions for every kind, so added and
+      // removed parts get markers too (string parsing only found "moved").
+      const fromDetails = data.component_details.map((d: ComponentChangeDetail): ComponentChange => ({
+        type: d.type,
+        ref: d.ref,
+        message: d.message,
+        fromPos: d.from ?? undefined,
+        toPos: d.to ?? undefined,
+      }));
+      return [...fromDetails, ...padChanges];
+    }
+    return [...parseComponentChanges(data.components ?? []), ...padChanges];
   }, [data]);
 
   const bounds: BoardBounds = useMemo(() =>

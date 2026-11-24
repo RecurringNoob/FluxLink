@@ -1,14 +1,16 @@
-opencv-python
-numpy
-pillow
+# Prefer `pip install -e .` (core) or `pip install -e ".[rag]"` (with chat)
+# from the repository root; pyproject.toml is the source of truth.
 click
-flask
+numpy
+opencv-python
 cairosvg
+flask
+flask-cors
 PyYAML
+# Chat / RAG
+fastapi
 uvicorn
 pydantic
 python-dotenv
-faiss-cpu
-cors
-fastapi
 openai
+faiss-cpu
