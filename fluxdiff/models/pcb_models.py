@@ -25,6 +25,15 @@ class Component:
     uuid: str = ""
     is_power_symbol: bool = False
 
+    @property
+    def is_graphic(self) -> bool:
+        """
+        Footprints without pads are board graphics (logos, Kibuzzard text
+        labels, artwork), not parts: they are left out of the component diff
+        and the BOM.
+        """
+        return not self.pads
+
 
 @dataclass
 class Net:

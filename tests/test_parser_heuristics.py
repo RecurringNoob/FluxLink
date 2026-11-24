@@ -8,7 +8,7 @@ from fluxdiff.analysis.erc_checker import _is_capacitor, _net_needs_pullup
 from fluxdiff.analysis.ground_checker import _is_ferrite
 from fluxdiff.analysis.power_tree import _is_battery, _is_connector
 from fluxdiff.diff.diff_engine import _rotation_delta, compare_pcbs
-from fluxdiff.models.pcb_models import Arc, Component, PCBData, Trace
+from fluxdiff.models.pcb_models import Arc, Component, Pad, PCBData, Trace
 from fluxdiff.parser.pcb_parser import parse_pcb
 
 BOARDS = Path(__file__).resolve().parent.parent / "test_boards"
@@ -105,10 +105,12 @@ def test_rotation_wraps():
 
 
 def test_component_details_have_positions():
-    old = PCBData(components=[Component("R1", "1k", "R", 1, 2, 0, "F.Cu", uuid="u1"),
-                              Component("R2", "1k", "R", 5, 5, 0, "F.Cu", uuid="u2")])
-    new = PCBData(components=[Component("R1", "1k", "R", 3, 4, 0, "F.Cu", uuid="u1"),
-                              Component("R3", "1k", "R", 9, 9, 0, "F.Cu", uuid="u3")])
+    def part(ref, x, y, uuid):
+        return Component(ref, "1k", "R", x, y, 0, "F.Cu", pads=[Pad("1", "N1")], uuid=uuid)
+    old = PCBData(components=[part("R1", 1, 2, "u1"), part("R2", 5, 5, "u2")])
+    new = PCBData(components=[part("R1", 3, 4, "u1"), part("R3", 9, 9, "u3"),
+                              # Board graphics (no pads) are not component changes.
+                              Component("kibuzzard-1", "", "", 7, 7, 0, "F.Cu", uuid="g1")])
     details = {d["type"]: d for d in compare_pcbs(old, new).component_change_details}
     assert details["added"]["to"] == {"x": 9, "y": 9}
     assert details["removed"]["from"] == {"x": 5, "y": 5}
@@ -125,3 +127,13 @@ def test_floating_net_marker_is_on_the_floating_pad():
     # All six floating U2 nets get distinct markers.
     u2 = {c for m, c in coords.items() if m.startswith("Net 'Net-(U2-Pad")}
     assert len(u2) == 6
+
+
+
+def test_placeholder_refs_are_skipped(tmp_path):
+    pcb = _write(tmp_path, '''
+      (footprint "LOGO" (layer "F.Cu") (at 10 10) (uuid "a") (property "Reference" "G***"))
+      (footprint "R_0805" (layer "F.Cu") (at 20 10) (uuid "b") (property "Reference" "R1")
+        (pad "1" smd rect (at 0 0) (size 1 1) (layers "F.Cu") (net 1 "/USB_DP")))
+    ''')
+    assert [c.ref for c in pcb.components] == ["R1"]

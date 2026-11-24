@@ -271,7 +271,9 @@ def extract_components(index, nets):
                 elif t == "value" and not value:
                     value = v
 
-        if not ref or ref == "REF**":
+        # Unannotated placeholders: REF** on unassigned footprints, G*** on
+        # KiCad logo / graphic footprints.
+        if not ref or "*" in ref:
             continue
 
         is_pwr_sym = _is_power_symbol_ref(ref)

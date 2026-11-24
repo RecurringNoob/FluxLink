@@ -189,7 +189,9 @@ python -m fluxdiff.rag.ingest.run_ingest --no-repo-files
 ```
 
 Each commit that changed a board file is diffed against its first parent, one
-board file at a time. Long documents are split into chunks that fit the
+board file at a time. Routing changes are indexed as a per-net summary
+(segments and length added/removed, layers, widths, vias) rather than one line
+per segment, and padless footprints (logos, text labels) are not treated as parts. Long documents are split into chunks that fit the
 embedding model's input limit, and requests are batched.
 
 Ingestion is idempotent: documents are deduplicated by SHA-256 content hash and

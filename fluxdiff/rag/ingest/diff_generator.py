@@ -22,6 +22,7 @@ import subprocess
 from typing import List, Optional
 
 from fluxdiff.rag.config import RAG_CONFIG
+from fluxdiff.rag.ingest.routing_summary import summarize_routing
 from fluxdiff.rag.schemas import DiffSummary
 
 # Matches "EXISTING: ..." and "ERC EXISTING: ..." / "BOM EXISTING: ..." lines.
@@ -101,7 +102,9 @@ class DiffGenerator:
         return DiffSummary(
             component_changes=diff.component_changes,
             net_changes=keep(diff.net_changes),
-            routing_changes=diff.routing_changes + diff.arc_changes + diff.zone_changes,
+            # Per-net summary instead of one line per segment (see routing_summary).
+            routing_changes=summarize_routing(
+                diff.routing_changes + diff.arc_changes + diff.zone_changes),
             power_tree=keep(diff.power_tree_changes),
             diff_pairs=keep(diff.diff_pair_changes),
             grounding=keep(diff.ground_changes),

@@ -3,14 +3,17 @@ import pytest
 from fluxdiff.analysis.impedance import (
     _build_net_targets, _match_net_target, _stripline_impedance, analyse_impedance,
 )
-from fluxdiff.models.pcb_models import Component, PCBData, Trace
+from fluxdiff.models.pcb_models import Component, Pad, PCBData, Trace
 from fluxdiff.supply_chain.bom_checker import analyse_supply_chain
 
 
 def _board():
+    pads = lambda: [Pad("1", "GND"), Pad("2", "VCC")]
     return PCBData(components=[
-        Component("R1", "10k", "R_0805", 0, 0, 0, "F.Cu"),
-        Component("C1", "100nF", "C_0805", 0, 0, 0, "F.Cu"),
+        Component("R1", "10k", "R_0805", 0, 0, 0, "F.Cu", pads=pads()),
+        Component("C1", "100nF", "C_0805", 0, 0, 0, "F.Cu", pads=pads()),
+        # A padless footprint is board artwork, not a BOM line.
+        Component("kibuzzard-61B9CE86", "LOGO", "", 0, 0, 0, "F.Cu"),
     ])
 
 
@@ -54,3 +57,9 @@ def test_lvds_trace_near_50_ohm_is_not_flagged():
     pcb = PCBData(traces=[Trace("F.Cu", (0, 0), (10, 0), "/LVDS_CLK_P", 0.32)])
     [finding] = analyse_impedance(pcb)
     assert finding.severity == "INFO"
+
+
+def test_graphic_footprints_are_not_bom_lines(monkeypatch):
+    monkeypatch.setenv("FLUXLINK_ERP_DEMO", "1")
+    refs = {r for f in analyse_supply_chain(_board()) for r in f.related_refs}
+    assert refs == {"R1", "C1"}

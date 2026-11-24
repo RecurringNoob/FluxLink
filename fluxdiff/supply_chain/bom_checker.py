@@ -14,7 +14,7 @@ _SEVERITY_ORDER = {"CRITICAL": 0, "WARNING": 1, "INFO": 2}
 def _build_bom(pcb: "PCBData") -> list[dict]:
     counts: dict[tuple, dict] = defaultdict(lambda: {"count": 0, "refs": []})
     for comp in pcb.components:
-        if comp.is_power_symbol:
+        if comp.is_power_symbol or comp.is_graphic:
             continue
         key = (comp.value or "?", comp.footprint or "")
         counts[key]["count"] += 1

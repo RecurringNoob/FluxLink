@@ -246,7 +246,7 @@ def compare_pcbs(old_pcb: PCBData, new_pcb: PCBData,
 def _build_component_map(components):
     by_uuid, by_ref, ref_counts = {}, {}, {}
     for c in components:
-        if not c.ref or c.ref == "REF**" or c.is_power_symbol:
+        if not c.ref or c.ref == "REF**" or c.is_power_symbol or c.is_graphic:
             continue
         ref_counts[c.ref] = ref_counts.get(c.ref, 0) + 1
         if c.uuid:
@@ -285,9 +285,9 @@ def component_diff(old_pcb, new_pcb, result):
     if old_key != new_key:
         print("[WARNING] UUID/ref mismatch — falling back to ref matching.")
         old_map = {c.ref: c for c in old_pcb.components
-                   if c.ref and c.ref != "REF**" and not c.is_power_symbol}
+                   if c.ref and c.ref != "REF**" and not c.is_power_symbol and not c.is_graphic}
         new_map = {c.ref: c for c in new_pcb.components
-                   if c.ref and c.ref != "REF**" and not c.is_power_symbol}
+                   if c.ref and c.ref != "REF**" and not c.is_power_symbol and not c.is_graphic}
         old_amb = new_amb = set()
 
     ambiguous = old_amb | new_amb
