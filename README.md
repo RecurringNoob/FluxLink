@@ -1,18 +1,144 @@
-# FluxLink
+<h1 align="center">FluxLink</h1>
 
-**Semantic PCB diff review with a natural-language chat interface.**
+<p align="center">
+  <b>Review KiCad board changes the way you review code.</b><br>
+  A semantic PCB diff, a visual board viewer, and a chat that knows your board's git history.
+</p>
 
-FluxLink combines two tools into one workflow: **FluxDiff** — a structured diff engine for KiCad `.kicad_pcb` files — and a **RAG-powered chat layer** that lets engineers query board changes in plain English. Review diffs visually in the interactive board viewer, then ask questions about what changed and why.
+<p align="center">
+  <img alt="Python 3.9+" src="https://img.shields.io/badge/python-3.9%2B-3776AB?logo=python&logoColor=white">
+  <img alt="KiCad 7+" src="https://img.shields.io/badge/KiCad-7%2B-314CB0?logo=kicad&logoColor=white">
+  <img alt="React 19" src="https://img.shields.io/badge/React-19-149ECA?logo=react&logoColor=white">
+  <img alt="OpenAI or Gemini" src="https://img.shields.io/badge/LLM-OpenAI%20%7C%20Gemini%20%7C%20local-555">
+  <img alt="MIT license" src="https://img.shields.io/badge/license-MIT-green">
+</p>
+
+<p align="center">
+  <img src="docs/images/viewer-side-by-side.png" alt="FluxLink board viewer: before and after boards side by side with finding markers, and a findings sidebar" width="100%">
+</p>
+
+A `git diff` of a `.kicad_pcb` file is thousands of lines of S-expressions, and a
+pixel diff shows *that* something moved but not *what it means*. FluxLink reads
+both board files and reports changes in engineering terms: which part moved or
+changed value, which pad switched nets, which new ERC warning appeared and which
+one was fixed. You can review the result on the board, and ask questions about
+the board's whole history in plain English.
+
+**Contents:** [Feature tour](#feature-tour) ·
+[How it works](#how-it-works) ·
+[Installation](#installation) ·
+[Quick start](#quick-start) ·
+[Board viewer](#board-viewer) ·
+[Chat](#chat-interface) ·
+[Ingestion](#ingestion) ·
+[Analysis modules](#analysis-modules) ·
+[Deploying](#deploying-the-chat-hosted-demo) ·
+[Models](#choosing-the-model-openai-gemini-local) ·
+[Configuration](#configuration) ·
+[Architecture](#architecture)
 
 ---
 
-## What's Inside
+## Feature tour
 
-| Layer | What it does |
+The board screenshots below come from the two boards in `test_boards/`. To
+reproduce them:
+
+```bash
+fluxlink test_boards/before3.kicad_pcb test_boards/after3.kicad_pcb --viewer
+```
+
+### 1. A diff that speaks PCB
+
+Each change is reported once, by part and net, with design-check findings marked
+**NEW**, **EXISTING** or **FIXED** so you only look at what this revision introduced:
+
+```text
+=== COMPONENT CHANGES (8) ===
+- Component value changed: C2 [10uF] -> [5uF]
+- Component value changed: R1 [10Kohm] -> [2Kohm]
+- Component moved: C3 (105.283,134.484) -> (103.000,137.475)
+...
+=== NET CHANGES (21) ===
+- CRITICAL: U2 pad 9 changed from Net-(C3-Pad1) -> GNDPWR
+- CRITICAL: Y2 pad 2 changed from Net-(C3-Pad1) -> GNDPWR
+- ERC NEW: WARNING: Net 'Net-(C3-Pad1)' is floating (only one real connection: C3)
+- ERC EXISTING: WARNING: U2 has no bypass capacitor within 5.0mm on power net '/VCC'
+...
+```
+
+Behind the report are checks for ERC, power tree, differential pairs, grounding,
+impedance and BOM stock ([details](#analysis-modules)).
+
+### 2. See it on the board
+
+Findings and component changes that have a board location get a marker. Click one in the
+sidebar (or step through them with `j` / `k`) and the viewer zooms to it:
+
+<p align="center">
+  <img src="docs/images/viewer-finding-zoom.png" alt="Viewer zoomed to a NEW floating-net warning at C3, with its tooltip" width="100%">
+</p>
+
+| Overlay: removed copper red, added copper green | Components: moved, added, removed and changed parts |
 |---|---|
-| **FluxDiff** | Compares two KiCad board files semantically — components, nets, routing, ERC, power tree, differential pairs, grounding, impedance, and BOM |
-| **Board Viewer** | Flask + React/Vite frontend: side-by-side / toggle / overlay view with interactive findings markers |
-| **FluxLink Chat** | RAG pipeline over git history — embeds diff summaries into a FAISS vector store, answers natural-language questions with cited sources, using OpenAI, Gemini or any OpenAI-compatible model |
+| ![Pixel diff overlay of the two boards](docs/images/viewer-overlay.png) | ![Components tab listing value changes and moves, with markers on the board](docs/images/viewer-components.png) |
+
+### 3. Ask the board's history
+
+Index a repository's history, from a local clone or straight from GitHub with no
+clone, then ask about it. For questions like "every change to U6" or "any critical
+issues?" the model looks up the indexed history directly instead of guessing, and
+each answer shows what it looked up and which commits it used.
+
+<p align="center">
+  <img src="docs/images/chat-tools.png" alt="FluxLink Chat answering questions about esp-rs/esp-rust-board, with the tools it used and the source commit" width="100%">
+</p>
+
+<table>
+  <tr>
+    <td>
+      <ul>
+        <li><b>Two sources:</b> GitHub (<code>owner/repo</code>, read through the API, nothing cloned) or a local folder.</li>
+        <li><b>One index per repository:</b> switch between them in the sidebar.</li>
+        <li><b>Any model:</b> OpenAI, Gemini, or a local OpenAI-compatible server such as Ollama.</li>
+        <li><b>Hosted demo mode:</b> ship prebuilt indexes in a read-only Docker image
+          (<a href="#deploying-the-chat-hosted-demo">how</a>).</li>
+      </ul>
+    </td>
+    <td width="220"><img src="docs/images/chat-add-repo.png" alt="Repositories panel: add a GitHub repository or a local folder" width="200"></td>
+  </tr>
+</table>
+
+---
+
+## How it works
+
+```mermaid
+flowchart TB
+  subgraph diff["FluxDiff: compare two boards"]
+    direction LR
+    A["before.kicad_pcb"] --> P["S-expression parser"]
+    B["after.kicad_pcb"] --> P
+    P --> D["Diff engine and design checks<br/>ERC · power · diff pairs · ground · impedance · BOM"]
+    D --> R["Text report"]
+    D --> V["Board viewer<br/>Flask + React"]
+    K["kicad-cli SVG export"] --> V
+  end
+  subgraph chat["FluxLink Chat: ask about history"]
+    direction LR
+    G["Git history<br/>local clone or GitHub API"] --> I["Ingest: diff every commit<br/>that changed a board"]
+    I --> E["Embeddings + FAISS index<br/>one per repository"]
+    E --> C["Chat engine"]
+    T["Tools: list_commits,<br/>component_history, get_findings, ..."] --> C
+    Q["Your question"] --> C
+    C --> L["LLM: OpenAI, Gemini or local"]
+  end
+  D -. "same diff engine" .-> I
+```
+
+The chat never reads raw S-expressions: every commit is run through the same
+diff engine as the CLI, and the resulting change descriptions are what gets
+indexed and searched.
 
 ---
 
@@ -26,7 +152,7 @@ diffing and the text report work without KiCad or Cairo.
 git clone https://github.com/RecurringNoob/FluxLink.git
 cd FluxLink
 pip install -e .            # diff engine, CLI and board viewer API
-pip install -e ".[rag]"     # + chat / RAG (fastapi, uvicorn, openai, faiss-cpu)
+pip install -e ".[rag]"     # + chat / RAG (fastapi, uvicorn, openai, google-genai, faiss-cpu)
 pip install -e ".[dev]"     # + pytest; run the tests with `pytest`
 ```
 
@@ -98,7 +224,7 @@ All files are written to `output/` in the working directory.
 The viewer is a React/Vite frontend served by Flask. Three view modes:
 
 - **Side by side** — before and after boards rendered simultaneously, findings markers on the after board
-- **Toggle** — flip between before and after with a single key
+- **Toggle** — flip between before and after in the same frame
 - **Overlay** — pixel-level diff image
 
 The **findings sidebar** lists all issues grouped by category (ERC, POWER, DIFF_PAIR, GROUND, IMPEDANCE, BOM) with severity badges (CRITICAL / WARNING / INFO), a NEW / EXISTING / FIXED status, free-text search, and severity filtering. The **components tab** lists added, removed, moved and modified parts. Clicking any finding or component change pans and zooms the board to that location.
@@ -172,12 +298,14 @@ POST /chat
 Body:    { "query": "What changed in the last commit?", "session_id": "optional" }
 Returns: { "answer": "...",
            "session_id": "3f2a…",
+           "tools": ["component_history(U6)"],
            "sources": [{ "commit": "<40-char hash>", "file": "board/main.kicad_pcb",
                          "type": "net", "date": "...", "author": "..." }] }
 ```
 
 Send the returned `session_id` with the next request to continue the conversation;
-omit it to start a new one. Add `"repo_id"` (from `GET /repos`) to ask about a
+omit it to start a new one. `tools` lists the tool calls made for the answer
+(empty when none were needed). Add `"repo_id"` (from `GET /repos`) to ask about a
 specific repository; without it the command-line index is used.
 
 #### Repositories
@@ -264,8 +392,8 @@ history. A running chat server picks up a new ingestion without a restart.
 
 By default the repository's `.md`, `.txt`, `.py`, `.json` and `.yaml` files are
 also indexed (lock files and files over 256 KB are skipped). **Their contents are
-sent to the OpenAI embeddings API** — keep secrets out of tracked config files,
-or use `--no-repo-files`.
+sent to your embedding provider (OpenAI or Gemini)** — keep secrets out of tracked
+config files, or use `--no-repo-files`.
 
 ---
 
@@ -392,6 +520,8 @@ set FLUXLINK_READONLY=1&& set FLUXDIFF_VECTOR_DB_PATH=deploy\index&& uvicorn flu
 | `FLUXDIFF_VECTOR_DB_PATH` | `/app/index` | The shipped `deploy/index` |
 | `FLUXLINK_FRONTEND_DIST` | `/app/web` | The built chat page |
 
+---
+
 ## Choosing the model (OpenAI, Gemini, local)
 
 The chat is provider-agnostic. Set the key for the provider you want in `.env`:
@@ -427,6 +557,8 @@ Other errors are reported immediately as one readable line.
 space. Each index records the model that built it: the chat asks you to re-index
 (↻) such repositories, and re-indexing rebuilds them automatically.
 
+---
+
 ## Configuration
 
 | Variable | Default | Purpose |
@@ -460,7 +592,7 @@ space. Each index records the model that built it: the chat asks you to re-index
 | Service | Port | Purpose |
 |---|---|---|
 | Flask board viewer | 5000 | `/api/diff`, `/api/board/*`, serves the React SPA |
-| FastAPI RAG chat | 8000 | `/chat`, `/chat/filtered`, `/health` |
+| FastAPI RAG chat | 8000 | `/chat`, `/chat/filtered`, `/repos`, `/health` |
 | Vite dev server | 5173 | Frontend HMR (proxies `/api` to Flask) |
 
 ---
@@ -494,13 +626,18 @@ fluxdiff/                        # Python package (installed as `fluxlink`)
 ├── viewer/server.py             # Flask API and SPA server
 └── rag/
     ├── config.py                # All RAG tunables (env-driven)
-    ├── api.py                   # FastAPI app
-    ├── ingest/                  # Git loader, diff generator, document builder
-    ├── embedding/               # OpenAI embedder, FAISS vector store
+    ├── providers.py             # OpenAI / Gemini selection, retries, fallback models
+    ├── api.py                   # FastAPI app (/chat, /repos, /health)
+    ├── server.py                # One-URL server for the hosted demo (chat page + /api)
+    ├── repos.py                 # Repository registry and background indexing
+    ├── ingest/                  # Git and GitHub loaders, diff generator, document builder
+    ├── embedding/               # OpenAI / Gemini embedder, FAISS vector store
     ├── retrieval/retriever.py   # Query embedding → similarity search → metadata filter
-    ├── llm/                     # LLM client, prompt templates
-    └── chat/                    # ChatEngine, ChatMemory (rolling window)
+    ├── llm/                     # LLM client (plain and tool calling), prompt templates
+    └── chat/                    # ChatEngine, ChatMemory, history tools
 fluxdiff-ui/fluxlink/              # React + Vite frontend (board viewer, /chat)
+docs/images/                       # README screenshots
+deploy/index/                      # Prebuilt indexes shipped with the hosted demo
 tests/                             # pytest suite (`pytest`)
 ```
 
