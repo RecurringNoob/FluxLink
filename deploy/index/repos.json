@@ -1,0 +1,16 @@
+[
+  {
+    "id": "github-esp-rs-esp-rust-board",
+    "kind": "github",
+    "location": "esp-rs/esp-rust-board",
+    "label": "esp-rs/esp-rust-board",
+    "ref": "",
+    "branch": "master",
+    "status": "ready",
+    "message": "Indexed 23 document(s).",
+    "documents": 23,
+    "max_commits": 50,
+    "embedding": "gemini:gemini-embedding-2",
+    "updated": "2026-11-24T12:33:45+00:00"
+  }
+]
