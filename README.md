@@ -119,6 +119,25 @@ A finding is EXISTING when the same issue (same check, severity and nets) is on 
 
 The `/chat` route opens FluxLink Chat — a full-page conversational UI backed by the RAG API.
 
+### Tools
+
+Besides similarity search, the chat model can call tools that read the indexed
+history exactly, so list, count, "latest" and history questions get complete answers:
+
+| Tool | Answers |
+|---|---|
+| `list_commits` | latest / first commit, timelines, how many revisions |
+| `get_commit` | everything recorded for one commit (hash or 4+ character prefix) |
+| `component_history` | every change mentioning a reference such as `U6` or `R5` |
+| `get_findings` | design-check findings (NEW / FIXED, by severity) and pad net changes |
+| `search_changes` | exact text search over changes (net names, values, footprints) |
+| `search_history` | similarity search with a new query |
+| `repo_overview` | what the board is: the repository README plus index statistics |
+
+The tools use existing indexes (no re-index needed). Each answer lists the tools
+it used under "Looked up". If a model cannot use tools, the chat answers without
+them; `FLUXDIFF_CHAT_TOOLS=0` turns tools off.
+
 ### Repositories: local or GitHub
 
 The **Repositories** panel in the chat sidebar indexes board history in two modes:
@@ -423,6 +442,7 @@ space. Each index records the model that built it: the chat asks you to re-index
 | `FLUXDIFF_EMBEDDING_PROVIDER` | same as LLM provider | `openai` or `gemini` |
 | `FLUXDIFF_LLM_MODEL` | `gpt-4o-mini` / `gemini-3.8-flash` | Chat completion model |
 | `FLUXDIFF_EMBEDDING_MODEL` | `text-embedding-3-small` / `gemini-embedding-2` | Embedding model |
+| `FLUXDIFF_CHAT_TOOLS` | `1` | `0` answers from similarity search only (no tool calls) |
 | `FLUXDIFF_LLM_FALLBACK_MODELS` | — / `gemini-3.5-flash-lite` | Comma-separated models tried when the main one is busy (503/429); empty disables |
 | `OPENAI_BASE_URL` | OpenAI | OpenAI-compatible server (Ollama, Groq, OpenRouter, ...) |
 | `FLUXDIFF_TOP_K` | `5` | Documents retrieved per query |

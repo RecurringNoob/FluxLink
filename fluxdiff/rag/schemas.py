@@ -100,3 +100,5 @@ class ChatResponse:
     # Each source: {"commit", "file", "type", "date"?, "author"?}
     sources: List[Dict[str, Any]] = field(default_factory=list)
     session_id: str = ""
+    # Tool calls made while answering, e.g. ["list_commits(5)", "component_history(U6)"]
+    tools_used: List[str] = field(default_factory=list)

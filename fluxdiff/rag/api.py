@@ -86,7 +86,7 @@ def get_chat_engine() -> ChatEngine:
         with _engine_lock:
             if chat_engine is None:
                 try:
-                    chat_engine = ChatEngine(store_for=_store_for)
+                    chat_engine = ChatEngine(store_for=_store_for, repo_info=repo_manager.get)
                 except Exception as e:
                     p = providers.llm_provider()
                     raise HTTPException(
@@ -157,6 +157,7 @@ def _respond(rag_query: RAGQuery, session_id: Optional[str], repo_id: Optional[s
         "answer":     response.answer,
         "sources":    response.sources,
         "session_id": response.session_id,
+        "tools":      response.tools_used,
     }
 
 

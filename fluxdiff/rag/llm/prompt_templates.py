@@ -76,3 +76,23 @@ def format_documents(documents) -> str:
         parts.append(f"[{label}]\n{doc.content}")
 
     return "\n\n".join(parts)
+
+# =========================
+# TOOLS
+# =========================
+
+TOOLS_PROMPT = """
+## TOOLS
+You can call tools that read this repository's indexed board history exactly.
+- Use them whenever the question needs exact or complete facts: the latest or first
+  commit, timelines, counts, everything about one commit, every change to a component
+  (component_history), design-check findings (get_findings), text such as a net name
+  (search_changes), or what the project/board is (repo_overview).
+- The REPOSITORY CONTEXT in the message is only a similarity-search sample; it may miss
+  things, so prefer tools for list/count/latest/history questions.
+- Call tools before answering when in doubt; you may call several. Do not invent
+  commits, components or findings that no tool or context shows.
+- In the answer, cite short commit hashes (7 characters) and dates for the facts you use.
+- Format as plain text (it is shown without Markdown): short paragraphs, and lines
+  starting with "- " for lists. No **bold**, headings or tables.
+""".strip()

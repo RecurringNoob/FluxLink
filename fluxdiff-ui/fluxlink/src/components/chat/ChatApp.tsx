@@ -115,6 +115,7 @@ interface Source {
 
 interface ChatApiResponse {
   answer?: string;
+  tools?: string[];
   sources?: Source[];
   session_id?: string;
   detail?: string;
@@ -125,7 +126,23 @@ interface Message {
   role: "user" | "assistant";
   content: string;
   sources?: Source[];
+  tools?: string[];      // tool calls made for this answer, e.g. "component_history(U6)"
   isNew: boolean;
+}
+
+function ToolsUsed({ tools }: { tools?: string[] }): JSX.Element | null {
+  if (!tools || tools.length === 0) return null;
+  const unique = Array.from(new Set(tools));
+  return (
+    <div className="mt-3 flex flex-wrap items-center gap-1.5 text-[11px] text-zinc-500 dark:text-zinc-400">
+      <span>Looked up:</span>
+      {unique.map((t) => (
+        <span key={t} className="rounded bg-zinc-100 dark:bg-zinc-800 px-1.5 py-0.5 font-mono">
+          {t}
+        </span>
+      ))}
+    </div>
+  );
 }
 
 // ─── TypewriterText ───────────────────────────────────────────────────────────
@@ -344,6 +361,7 @@ export function ChatApp(): JSX.Element {
         role: "assistant",
         content: data.answer ?? "Sorry, I received an empty response.",
         sources: data.sources ?? [],
+        tools: data.tools ?? [],
         isNew: true,
       };
 
@@ -556,7 +574,10 @@ export function ChatApp(): JSX.Element {
                         <p className="whitespace-pre-wrap">{message.content}</p>
                       )}
                       {message.role === "assistant" && (
-                        <SourcesPanel sources={message.sources} />
+                        <>
+                          <ToolsUsed tools={message.tools} />
+                          <SourcesPanel sources={message.sources} />
+                        </>
                       )}
                     </div>
                   </div>
