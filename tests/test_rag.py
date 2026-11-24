@@ -294,6 +294,7 @@ def test_api_module_imports_and_validates(tmp_path, monkeypatch):
     engine, _ = _engine(tmp_path)
     monkeypatch.setattr(api, "chat_engine", engine)
     client = TestClient(api.app)
+    assert client.post("/chat", json={"query": "  "}).status_code == 422
     first = client.post("/chat", json={"query": "routing"}).json()
     assert first["session_id"] and first["sources"]
     filtered = client.post("/chat/filtered",
@@ -301,3 +302,23 @@ def test_api_module_imports_and_validates(tmp_path, monkeypatch):
     assert {s["type"] for s in filtered["sources"]} == {"net"}
     assert client.delete(f"/chat/session/{first['session_id']}").json() == {"status": "ok"}
     assert client.get("/health").json()["documents_indexed"] == 2
+
+
+def test_api_starts_without_openai_key(monkeypatch):
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+    from fastapi.testclient import TestClient
+    import fluxdiff.rag.api as api
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(api, "chat_engine", None)
+
+    def no_key():
+        raise RuntimeError("The api_key client option must be set")
+    monkeypatch.setattr(api, "ChatEngine", no_key)
+
+    client = TestClient(api.app)
+    resp = client.post("/chat", json={"query": "hello"})
+    assert resp.status_code == 503
+    assert "OPENAI_API_KEY" in resp.json()["detail"]
+    assert client.get("/health").status_code == 503

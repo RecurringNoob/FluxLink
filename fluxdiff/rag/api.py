@@ -17,6 +17,7 @@ back on the next request to continue the same conversation.
 """
 
 import os
+import threading
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -51,7 +52,28 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-chat_engine = ChatEngine()
+# Built on first use, not at import: constructing it creates the OpenAI
+# client, which raises without OPENAI_API_KEY.  Creating it at import time
+# made `uvicorn fluxdiff.rag.api:app` crash on startup (and the module
+# impossible to import in tests) instead of answering with a clear error.
+chat_engine: Optional[ChatEngine] = None
+_engine_lock = threading.Lock()
+
+
+def get_chat_engine() -> ChatEngine:
+    global chat_engine
+    if chat_engine is None:
+        with _engine_lock:
+            if chat_engine is None:
+                try:
+                    chat_engine = ChatEngine()
+                except Exception as e:
+                    raise HTTPException(
+                        status_code=503,
+                        detail=(f"Chat engine unavailable ({type(e).__name__}: {e}). "
+                                f"Check OPENAI_API_KEY and that the [rag] extras are installed."),
+                    )
+    return chat_engine
 
 
 # ------------------------------------------------------------------
@@ -77,7 +99,7 @@ def _respond(rag_query: RAGQuery, session_id: Optional[str]):
     if not rag_query.query.strip():
         raise HTTPException(status_code=422, detail="query must not be empty")
     try:
-        response = chat_engine.ask_with_filters(rag_query, session_id=session_id)
+        response = get_chat_engine().ask_with_filters(rag_query, session_id=session_id)
     except LLMError as e:
         raise HTTPException(status_code=502, detail=f"LLM request failed: {e}")
     return {
@@ -109,14 +131,15 @@ def chat_filtered(req: FilteredChatRequest):
 
 @app.delete("/chat/session/{session_id}")
 def reset_session(session_id: str):
-    chat_engine.reset_session(session_id)
+    get_chat_engine().reset_session(session_id)
     return {"status": "ok"}
 
 
 @app.get("/health")
 def health():
-    """Liveness probe — reports the documents the chat engine is serving."""
+    """Liveness probe — reports the documents the chat engine is serving.
+    Returns 503 when the engine cannot start (e.g. OPENAI_API_KEY missing)."""
     return {
         "status":            "ok",
-        "documents_indexed": len(chat_engine.retriever.store),
+        "documents_indexed": len(get_chat_engine().retriever.store),
     }

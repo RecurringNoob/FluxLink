@@ -142,6 +142,8 @@ Returns: { "answer": "...",
 Send the returned `session_id` with the next request to continue the conversation;
 omit it to start a new one. `DELETE /chat/session/{session_id}` forgets a conversation.
 If the LLM call fails the API returns HTTP 502 with the error in `detail`.
+The server starts without `OPENAI_API_KEY`; until the key is set, chat requests
+and `/health` return HTTP 503 with the reason in `detail`.
 
 #### Filtered retrieval
 
