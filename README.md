@@ -186,7 +186,18 @@ python -m fluxdiff.rag.ingest.run_ingest --stackup stackup.yaml
 
 # Board history only — do not index the repository's text files
 python -m fluxdiff.rag.ingest.run_ingest --no-repo-files
+
+# Read a GitHub repository directly — no clone needed
+python -m fluxdiff.rag.ingest.run_ingest --github esp-rs/esp-rust-board
+python -m fluxdiff.rag.ingest.run_ingest --github https://github.com/owner/repo --ref dev
 ```
+
+**GitHub mode** (`--github`, or `FLUXDIFF_GITHUB_REPO` in `.env`) reads the board
+history through the GitHub API and downloads each board version from
+raw.githubusercontent.com. A typical run makes 3–5 API calls, within GitHub's
+60-per-hour limit without a token; set `GITHUB_TOKEN` for private repositories or
+a higher limit. It indexes board history only (not the repository's text files),
+and finds board files from the tree at `--ref`, so boards deleted earlier are skipped.
 
 Each commit that changed a board file is diffed against its first parent, one
 board file at a time. Routing changes are indexed as a per-net summary
@@ -277,6 +288,8 @@ Groups components by `(value, footprint)`, queries the ERP adapter, and reports 
 | Variable | Default | Purpose |
 |---|---|---|
 | `FLUXDIFF_REPO_PATH` | current directory | Path to the KiCad git repository |
+| `FLUXDIFF_GITHUB_REPO` | *(unset)* | `owner/repo` to ingest from GitHub without cloning (same as `--github`) |
+| `GITHUB_TOKEN` | *(unset)* | GitHub token for private repositories or a higher API limit |
 | `OPENAI_API_KEY` | *(required)* | OpenAI API key |
 | `FLUXDIFF_EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model |
 | `FLUXDIFF_LLM_MODEL` | `gpt-4o-mini` | Chat completion model |

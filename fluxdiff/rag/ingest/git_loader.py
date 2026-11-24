@@ -34,7 +34,7 @@ class GitLoader:
             "git", "log",
             f"--max-count={max_count}",
             # ASCII unit/record separators cannot appear in commit subjects.
-            "--pretty=format:%H%x1f%s%x1f%an%x1f%ad%x1e",
+            "--pretty=format:%H%x1f%s%x1f%an%x1f%aI%x1e",   # %aI: ISO 8601, as GitHub reports it
         ]
         if pcb_only:
             command += ["--", PCB_PATHSPEC]

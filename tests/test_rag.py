@@ -322,3 +322,62 @@ def test_api_starts_without_openai_key(monkeypatch):
     assert resp.status_code == 503
     assert "OPENAI_API_KEY" in resp.json()["detail"]
     assert client.get("/health").status_code == 503
+
+
+# --------------------------------------------------------------------------
+# GitHub mode (no clone), against a fake GitHub backed by the same repo
+# --------------------------------------------------------------------------
+
+from fake_github import FakeGitHub                                        # noqa: E402
+from fluxdiff.rag.ingest.github_source import GitHubError, GitHubSource, parse_repo  # noqa: E402
+
+
+@pytest.mark.parametrize("spec", ["acme/board", "https://github.com/acme/board",
+                                  "https://github.com/acme/board.git", "github.com/acme/board/"])
+def test_parse_repo(spec):
+    assert parse_repo(spec) == ("acme", "board")
+
+
+def _contents(store):
+    return sorted((d.metadata.get("commit"), d.metadata["type"], d.content)
+                  for d in store.documents if d.metadata["type"] != "repo_file")
+
+
+def test_github_mode_matches_local_clone(board_repo, tmp_path, monkeypatch):
+    monkeypatch.delenv("FLUXLINK_ERP_DEMO", raising=False)
+    local = VectorStore(db_path=str(tmp_path / "local"))
+    run_ingestion(repo_path=str(board_repo), embedder=fake_embedder(), store=local)
+
+    fake = FakeGitHub(board_repo)
+    remote = VectorStore(db_path=str(tmp_path / "remote"))
+    source = GitHubSource("acme/board", token="", http=fake)
+    run_ingestion(github_source=source, embedder=fake_embedder(), store=remote)
+
+    assert _contents(remote) == _contents(local)
+    assert source.find_pcb_files() == ["main.kicad_pcb"]
+    api_calls = [u for u in fake.calls if "api.github.com" in u]
+    assert len(api_calls) <= 4          # repo, tree, commits (+ maybe one page)
+
+
+def test_github_rate_limit_is_explained(board_repo):
+    fake = FakeGitHub(board_repo)
+    fake.fail_with = (403, "API rate limit exceeded for 1.2.3.4.")
+    with pytest.raises(GitHubError, match="GITHUB_TOKEN"):
+        GitHubSource("acme/board", token="", http=fake)
+
+
+def test_github_missing_file_reads_as_none(board_repo):
+    source = GitHubSource("acme/board", token="", http=FakeGitHub(board_repo))
+    head = _git(board_repo, "rev-parse", "HEAD")
+    assert source.read_file(head, "does/not/exist.kicad_pcb") is None
+    assert source.read_file(head, "main.kicad_pcb").startswith("(kicad_pcb")
+
+
+def test_github_token_is_sent(board_repo):
+    seen = []
+    fake = FakeGitHub(board_repo)
+    def spy(url, headers):
+        seen.append(headers.get("Authorization"))
+        return fake(url, headers)
+    GitHubSource("acme/board", token="t0k", http=spy)
+    assert seen == ["Bearer t0k"]

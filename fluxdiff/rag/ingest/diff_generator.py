@@ -34,10 +34,17 @@ def _drop_existing(lines: List[str]) -> List[str]:
 
 
 class DiffGenerator:
-    def __init__(self, repo_path: str = None, stackup_config: str = None):
+    def __init__(self, repo_path: str = None, stackup_config: str = None,
+                 file_reader=None):
+        """
+        file_reader(commit_hash, path) -> str | None reads a file at a commit.
+        Defaults to `git show` in repo_path; the GitHub ingestion mode passes
+        GitHubSource.read_file instead, so no local clone is needed.
+        """
         self.repo_path = repo_path or RAG_CONFIG["repo_path"]
         # Optional path to a YAML/JSON stackup config forwarded to analyse_impedance
         self.stackup_config = stackup_config
+        self._read = file_reader or self._get_file_at_commit
 
     # ------------------------------------------------------------------
     # Git helpers
@@ -130,8 +137,8 @@ class DiffGenerator:
         Returns an empty DiffSummary if the file is absent in either commit.
         Temp files are always cleaned up, even on error.
         """
-        before_content = self._get_file_at_commit(commit_a, pcb_file_path)
-        after_content  = self._get_file_at_commit(commit_b, pcb_file_path)
+        before_content = self._read(commit_a, pcb_file_path)
+        after_content  = self._read(commit_b, pcb_file_path)
 
         if not before_content or not after_content:
             print(

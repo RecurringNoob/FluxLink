@@ -8,6 +8,7 @@ Usage:
     python -m fluxdiff.rag.ingest.run_ingest --clear         # wipe DB first
     python -m fluxdiff.rag.ingest.run_ingest --stackup path/to/stackup.yaml
     python -m fluxdiff.rag.ingest.run_ingest --no-repo-files # board history only
+    python -m fluxdiff.rag.ingest.run_ingest --github esp-rs/esp-rust-board   # no clone
 
 Each commit that changed a .kicad_pcb file is diffed against its first
 parent, one board file at a time.  (Previously every pair of neighbouring
@@ -16,6 +17,9 @@ boards and, across merges, compared commits that are not parent and child.)
 
 Environment variables (see config.py):
     FLUXDIFF_REPO_PATH       — path to the KiCad git repository
+    FLUXDIFF_GITHUB_REPO     — owner/repo on GitHub; read over the API instead
+                               of a local clone (same as --github)
+    GITHUB_TOKEN             — optional; private repos / higher API rate limit
     FLUXDIFF_VECTOR_DB_PATH  — override storage location
     OPENAI_API_KEY           — required for embeddings
 """
@@ -105,9 +109,30 @@ def run_ingestion(
     repo_path: str = None,
     embedder=None,
     store=None,
+    github: str = None,
+    github_ref: str = None,
+    github_source=None,
 ):
-    repo_path = repo_path or RAG_CONFIG["repo_path"]
-    print(f"Starting ingestion for repo: {repo_path}")
+    """
+    Ingest board history from a local clone (repo_path / FLUXDIFF_REPO_PATH)
+    or, with github="owner/repo" (or a prepared github_source), straight from
+    GitHub without cloning.  Repository text files are only indexed from a
+    local clone.
+    """
+    if github or github_source:
+        from fluxdiff.rag.ingest.github_source import GitHubSource
+        source = github_source or GitHubSource(github, ref=github_ref)
+        print(f"Starting ingestion for {source.label} (no local clone)")
+        loader   = source
+        diff_gen = DiffGenerator(stackup_config=stackup_config, file_reader=source.read_file)
+        if include_repo_files:
+            print("Note: repository text files are not indexed in GitHub mode.")
+            include_repo_files = False
+    else:
+        repo_path = repo_path or RAG_CONFIG["repo_path"]
+        print(f"Starting ingestion for repo: {repo_path}")
+        loader   = GitLoader(repo_path)
+        diff_gen = DiffGenerator(repo_path, stackup_config=stackup_config)
 
     if embedder is None:
         from fluxdiff.rag.embedding.embedder import Embedder
@@ -119,8 +144,6 @@ def run_ingestion(
     if clear_first:
         store.clear()
 
-    loader   = GitLoader(repo_path)
-    diff_gen = DiffGenerator(repo_path, stackup_config=stackup_config)
     builder  = DocumentBuilder()
 
     all_docs = collect_board_documents(loader, diff_gen, builder, max_commits)
@@ -168,6 +191,11 @@ def _parse_args():
                         help="Path to YAML/JSON stackup config for impedance analysis")
     parser.add_argument("--no-repo-files", action="store_true",
                         help="Index board history only, not the repository's text files")
+    parser.add_argument("--github", default=os.getenv("FLUXDIFF_GITHUB_REPO"), metavar="OWNER/REPO",
+                        help="Read board history from GitHub instead of a local clone "
+                             "(default: $FLUXDIFF_GITHUB_REPO)")
+    parser.add_argument("--ref", default=None, metavar="BRANCH",
+                        help="Branch, tag or commit to read with --github (default: the default branch)")
     return parser.parse_args()
 
 
@@ -178,4 +206,6 @@ if __name__ == "__main__":
         clear_first=args.clear,
         stackup_config=args.stackup,
         include_repo_files=not args.no_repo_files,
+        github=args.github,
+        github_ref=args.ref,
     )
