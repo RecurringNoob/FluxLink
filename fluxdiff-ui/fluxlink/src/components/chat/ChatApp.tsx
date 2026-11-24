@@ -7,6 +7,8 @@ import type { RepoKind } from "./repos";
 
 const API_URL: string = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
 const ACTIVE_REPO_KEY = "fluxlink.activeRepo";
+// Hosted chat-only builds (see Dockerfile) have no board viewer to link to.
+const CHAT_ONLY = import.meta.env.VITE_CHAT_ONLY === "1";
 
 function loadActiveRepo(): string | null {
   try {
@@ -240,7 +242,7 @@ export function ChatApp(): JSX.Element {
   // Server-side conversation memory is keyed by this id (see rag/api.py).
   const [sessionId, setSessionId] = useState<string | null>(null);
   // Repository the chat answers about (see rag/repos.py).
-  const { repos, models, loaded, allowLocal, loadError, add, reindex, remove } = useRepos(API_URL);
+  const { repos, models, loaded, allowLocal, readonly, loadError, add, reindex, remove } = useRepos(API_URL);
   const [activeRepoId, setActiveRepoId] = useState<string | null>(loadActiveRepo);
   const activeRepo =
     repos.find((r) => r.id === activeRepoId) ??
@@ -441,6 +443,7 @@ export function ChatApp(): JSX.Element {
             models={models}
             loaded={loaded}
             allowLocal={allowLocal}
+            readonly={readonly}
             loadError={loadError}
             activeRepoId={activeRepo?.id ?? null}
             onSelect={handleSelectRepo}
@@ -450,6 +453,7 @@ export function ChatApp(): JSX.Element {
           />
         </div>
 
+        {!CHAT_ONLY && (
         <div className="p-3 mt-auto border-t border-white/10">
           <a
             href="/"
@@ -459,6 +463,7 @@ export function ChatApp(): JSX.Element {
             Back to board viewer
           </a>
         </div>
+        )}
       </aside>
 
       {/* Main Content */}

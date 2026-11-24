@@ -32,6 +32,7 @@ export function needsReindex(repo: Repo, models: Models | null): boolean {
 interface RepoList {
   repos: Repo[];
   allow_local: boolean;
+  readonly?: boolean;
   busy: boolean;
   llm?: string;
   embedding?: string;
@@ -56,6 +57,7 @@ const POLL_MS = 1500;
 export function useRepos(apiUrl: string) {
   const [repos, setRepos] = useState<Repo[]>([]);
   const [allowLocal, setAllowLocal] = useState(true);
+  const [readonly, setReadonly] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [models, setModels] = useState<Models | null>(null);
@@ -65,6 +67,7 @@ export function useRepos(apiUrl: string) {
       const data = await call<RepoList>(apiUrl, "/repos");
       setRepos(data.repos);
       setAllowLocal(data.allow_local);
+      setReadonly(Boolean(data.readonly));
       setModels(data.llm && data.embedding ? { llm: data.llm, embedding: data.embedding } : null);
       setLoadError(null);
     } catch (e) {
@@ -104,5 +107,5 @@ export function useRepos(apiUrl: string) {
     await refresh();
   }, [apiUrl, refresh]);
 
-  return { repos, models, allowLocal, loadError, loaded, refresh, add, reindex, remove };
+  return { repos, models, allowLocal, readonly, loadError, loaded, refresh, add, reindex, remove };
 }

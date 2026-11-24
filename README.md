@@ -317,6 +317,62 @@ Groups components by `(value, footprint)`, queries the ERP adapter, and reports 
 
 ---
 
+## Deploying the chat (hosted demo)
+
+The hosted chat is **read-only and pre-indexed**: you index repositories on your
+machine, ship the indexes with the app, and the server only answers questions.
+(Free hosting wipes the disk on restart, and indexing takes minutes.)
+
+**1. Index locally** with the provider you will deploy with (same `.env` key),
+in the chat page or from the command line:
+
+```bash
+python -m fluxdiff.rag.repos add github esp-rs/esp-rust-board
+python -m fluxdiff.rag.repos list
+```
+
+**2. Export the indexes into the repo** and commit them:
+
+```bash
+python -m fluxdiff.rag.repos export deploy/index
+git add deploy/index && git commit -m "Demo indexes" && git push
+```
+
+Everything in `deploy/index` becomes public with your repository, so only export
+repositories whose content may be public.
+
+**3. Deploy the Docker image.** The `Dockerfile` builds the chat page and API into
+one service that listens on `$PORT`. On [Render](https://render.com) (free tier):
+*New → Web Service →* connect the GitHub repository (Render uses the
+`Dockerfile`) *→ Instance type: Free →* add the environment variable
+`GEMINI_API_KEY` (or `OPENAI_API_KEY`) *→ Deploy*. The site opens on the chat.
+
+Free Render services sleep after 15 minutes without traffic and take about a
+minute to wake: open the URL a couple of minutes before presenting.
+
+**Rehearse locally** with the same setup:
+
+```bash
+docker build -t fluxlink .
+docker run -p 8000:8000 -e GEMINI_API_KEY=... fluxlink        # http://localhost:8000
+```
+
+or, without Docker (Windows `cmd`):
+
+```bat
+cd fluxdiff-ui\fluxlink
+set VITE_API_URL=/api&& set VITE_CHAT_ONLY=1&& npm run build
+cd ..\..
+set FLUXLINK_READONLY=1&& set FLUXDIFF_VECTOR_DB_PATH=deploy\index&& uvicorn fluxdiff.rag.server:app --port 8000
+```
+
+| Variable (set by the Dockerfile) | Value | Purpose |
+|---|---|---|
+| `FLUXLINK_READONLY` | `1` | Visitors can chat but not add, re-index or remove repositories |
+| `FLUXLINK_ALLOW_LOCAL_REPOS` | `0` | Never read folders on the server |
+| `FLUXDIFF_VECTOR_DB_PATH` | `/app/index` | The shipped `deploy/index` |
+| `FLUXLINK_FRONTEND_DIST` | `/app/web` | The built chat page |
+
 ## Choosing the model (OpenAI, Gemini, local)
 
 The chat is provider-agnostic. Set the key for the provider you want in `.env`:
@@ -355,6 +411,7 @@ space. Each index records the model that built it: the chat asks you to re-index
 | `FLUXDIFF_GITHUB_REPO` | *(unset)* | `owner/repo` to ingest from GitHub without cloning (same as `--github`) |
 | `GITHUB_TOKEN` | *(unset)* | GitHub token for private repositories or a higher API limit |
 | `FLUXLINK_ALLOW_LOCAL_REPOS` | `1` | `0` stops the chat UI from indexing local folders (set it when the API is shared) |
+| `FLUXLINK_READONLY` | `0` | `1` serves existing indexes only (hosted demos; set by the Dockerfile) |
 | `OPENAI_API_KEY` | — | OpenAI (or OpenAI-compatible server) key |
 | `GEMINI_API_KEY` | — | Gemini key (`GOOGLE_API_KEY` also works) |
 | `FLUXDIFF_LLM_PROVIDER` | from the key present | `openai` or `gemini` |

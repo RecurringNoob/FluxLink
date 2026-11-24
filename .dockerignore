@@ -1,0 +1,15 @@
+# Never bake secrets or local state into the image
+.env
+.env.*
+rag_db/
+output/
+# Local environments and build output
+venv/
+.venv/
+env/
+**/node_modules/
+fluxdiff-ui/fluxlink/dist/
+**/__pycache__/
+*.egg-info/
+.git/
+.pytest_cache/

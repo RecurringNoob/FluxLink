@@ -21,6 +21,16 @@ Local folders can be indexed from the browser only while
 FLUXLINK_ALLOW_LOCAL_REPOS is true (the default).  Set it to 0 when the chat
 API is reachable by other people, so they cannot make it read folders on
 this machine.
+
+FLUXLINK_READONLY=1 (set by the Dockerfile for hosted demos) serves the
+indexes that exist and refuses to add, re-index or remove repositories, so
+visitors cannot spend the API quota or change the demo.
+
+Command line (build or ship indexes without the UI):
+    python -m fluxdiff.rag.repos list
+    python -m fluxdiff.rag.repos add github esp-rs/esp-rust-board [--ref BRANCH]
+    python -m fluxdiff.rag.repos add local D:/boards/my-board
+    python -m fluxdiff.rag.repos export deploy/index [REPO_ID ...]
 """
 
 import hashlib
@@ -52,8 +62,26 @@ class LocalReposDisabled(PermissionError):
     pass
 
 
+class RepoReadOnly(PermissionError):
+    pass
+
+
+def _flag(name: str, default: str) -> bool:
+    return os.getenv(name, default).strip().lower() not in ("0", "false", "no", "")
+
+
 def local_repos_allowed() -> bool:
-    return os.getenv("FLUXLINK_ALLOW_LOCAL_REPOS", "1").strip().lower() not in ("0", "false", "no")
+    return _flag("FLUXLINK_ALLOW_LOCAL_REPOS", "1") and not readonly()
+
+
+def readonly() -> bool:
+    return _flag("FLUXLINK_READONLY", "0")
+
+
+def _check_writable():
+    if readonly():
+        raise RepoReadOnly("This FluxLink server is read-only (FLUXLINK_READONLY=1); "
+                           "repositories cannot be added, re-indexed or removed here.")
 
 
 @dataclass
@@ -187,6 +215,7 @@ class RepoManager:
     def add(self, kind: str, location: str, ref: str = "", max_commits: int = 50,
             background: bool = True) -> dict:
         """Register (or re-index) a repository and start indexing it."""
+        _check_writable()
         ref = (ref or "").strip()
         max_commits = max(1, min(int(max_commits or 50), 500))
         repo_id, normalized, label = self._describe(kind, location, ref)
@@ -214,6 +243,7 @@ class RepoManager:
                         background=background)
 
     def remove(self, repo_id: str):
+        _check_writable()
         with self._lock:
             if repo_id == DEFAULT_REPO_ID:
                 raise RepoError("The command-line index is managed with run_ingest --clear.")
@@ -273,3 +303,72 @@ class RepoManager:
                          embedding=store.embedding or getattr(embedder, "signature", ""))
         except Exception as e:                       # reported to the UI, not raised
             self._update(repo_id, status="error", message=f"{type(e).__name__}: {e}"[:300])
+
+
+    # ------------------------------------------------------------------
+    # Export (ship prebuilt indexes with a deployment)
+    # ------------------------------------------------------------------
+
+    def export(self, target: str, repo_ids: Optional[List[str]] = None) -> List[str]:
+        """
+        Copy the indexes of ready repositories (all, or repo_ids) into target,
+        with a repos.json listing only them.  Point FLUXDIFF_VECTOR_DB_PATH at
+        target to serve them (the Dockerfile ships deploy/index this way).
+        """
+        with self._lock:
+            chosen = [r for r in self._repos.values()
+                      if r.status == "ready" and (not repo_ids or r.id in repo_ids)]
+        missing = set(repo_ids or []) - {r.id for r in chosen}
+        if missing:
+            raise RepoError(f"Not ready or unknown: {', '.join(sorted(missing))}")
+        if not chosen:
+            raise RepoError("No indexed repositories to export.")
+        target = os.path.abspath(target)
+        if target == os.path.abspath(self.root):
+            raise RepoError("Export target must differ from the live index folder.")
+        os.makedirs(os.path.join(target, "repos"), exist_ok=True)
+        for repo in chosen:
+            dest = os.path.join(target, "repos", repo.id)
+            shutil.rmtree(dest, ignore_errors=True)
+            shutil.copytree(self.store_path(repo.id), dest)
+        with open(os.path.join(target, "repos.json"), "w", encoding="utf-8") as f:
+            json.dump([asdict(r) for r in chosen], f, indent=2)
+        return [r.id for r in chosen]
+
+
+def _main(argv=None):
+    import argparse
+    from dotenv import load_dotenv
+    load_dotenv()
+
+    parser = argparse.ArgumentParser(prog="python -m fluxdiff.rag.repos",
+                                     description="Manage FluxLink chat repositories.")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("list", help="show indexed repositories")
+    add = sub.add_parser("add", help="add (or re-index) a repository, in the foreground")
+    add.add_argument("kind", choices=KINDS)
+    add.add_argument("location", help="owner/repo or GitHub URL, or a local folder")
+    add.add_argument("--ref", default="", help="GitHub branch or tag")
+    add.add_argument("--max-commits", type=int, default=50)
+    exp = sub.add_parser("export", help="copy indexes to a folder to ship with a deployment")
+    exp.add_argument("target")
+    exp.add_argument("repo_ids", nargs="*")
+    args = parser.parse_args(argv)
+
+    manager = RepoManager()
+    if args.cmd == "list":
+        for r in manager.list():
+            print(f"{r['id']:45s} {r['status']:9s} {r['documents']:5d} docs  "
+                  f"{r.get('embedding') or '':35s} {r['label']}")
+    elif args.cmd == "add":
+        repo = manager.add(args.kind, args.location, args.ref, args.max_commits, background=False)
+        print(f"{repo['id']}: {repo['status']} — {repo['message']}")
+        if repo["status"] != "ready":
+            raise SystemExit(1)
+    elif args.cmd == "export":
+        ids = manager.export(args.target, args.repo_ids or None)
+        print(f"Exported {len(ids)} index(es) to {os.path.abspath(args.target)}: {', '.join(ids)}")
+
+
+if __name__ == "__main__":
+    _main()

@@ -38,8 +38,8 @@ from fluxdiff.rag import providers
 from fluxdiff.rag.chat.chat_engine import ChatEngine
 from fluxdiff.rag.embedding.vector_store import EmbeddingMismatch
 from fluxdiff.rag.llm.llm_client import LLMError
-from fluxdiff.rag.repos import (DEFAULT_REPO_ID, LocalReposDisabled, RepoBusy, RepoError,
-                                RepoManager, local_repos_allowed)
+from fluxdiff.rag.repos import (DEFAULT_REPO_ID, RepoBusy, RepoError, RepoManager,
+                                local_repos_allowed, readonly)
 from fluxdiff.rag.schemas import RAGQuery
 
 # ------------------------------------------------------------------
@@ -185,13 +185,13 @@ def reset_session(session_id: str):
 @app.get("/repos")
 def list_repos():
     return {"repos": repo_manager.list(), "allow_local": local_repos_allowed(),
-            "busy": repo_manager.is_busy(), **providers.describe()}
+            "readonly": readonly(), "busy": repo_manager.is_busy(), **providers.describe()}
 
 
 def _repo_call(fn, *args):
     try:
         return fn(*args)
-    except LocalReposDisabled as e:
+    except PermissionError as e:          # local folders disabled, or read-only server
         raise HTTPException(status_code=403, detail=str(e))
     except RepoBusy as e:
         raise HTTPException(status_code=409, detail=str(e))

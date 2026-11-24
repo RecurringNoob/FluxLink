@@ -8,6 +8,7 @@ interface RepoPanelProps {
   models: Models | null;
   loaded: boolean;
   allowLocal: boolean;
+  readonly: boolean;     // hosted demo: no add / re-index / remove
   loadError: string | null;
   activeRepoId: string | null;
   onSelect: (id: string) => void;
@@ -49,12 +50,12 @@ function StatusLine({ repo, models }: { repo: Repo; models: Models | null }): JS
 }
 
 export function RepoPanel({
-  repos, models, loaded, allowLocal, loadError, activeRepoId, onSelect, onAdd, onReindex, onRemove,
+  repos, models, loaded, allowLocal, readonly, loadError, activeRepoId, onSelect, onAdd, onReindex, onRemove,
 }: RepoPanelProps): JSX.Element {
   const [formOpen, setFormOpen] = useState(false);
   // With no repositories yet, the form is the only useful thing to show.
   const firstRun = loaded && repos.length === 0 && !loadError;
-  const showForm = formOpen || firstRun;
+  const showForm = !readonly && (formOpen || firstRun);
   const [kind, setKind] = useState<RepoKind>("github");
   const [location, setLocation] = useState("");
   const [ref, setRef] = useState("");
@@ -94,7 +95,7 @@ export function RepoPanel({
     <div className="flex flex-col gap-2">
       <div className="flex items-center justify-between px-2 mt-2">
         <p className="text-xs font-semibold text-zinc-500 tracking-wide">Repositories</p>
-        {!firstRun && (
+        {!firstRun && !readonly && (
           <button
             onClick={() => { setFormOpen((v) => !v); setFormError(null); }}
             className="text-xs font-medium text-zinc-400 hover:text-zinc-100 px-1.5 py-0.5 rounded hover:bg-white/10"
@@ -162,7 +163,9 @@ export function RepoPanel({
 
       {firstRun && (
         <p className="px-2 text-xs leading-snug text-zinc-500">
-          No repositories yet. Add a GitHub repository or a local clone to chat about its board history.
+          {readonly
+            ? "No repositories are indexed on this server."
+            : "No repositories yet. Add a GitHub repository or a local clone to chat about its board history."}
         </p>
       )}
 
@@ -177,7 +180,7 @@ export function RepoPanel({
               <button
                 onClick={() => onSelect(repo.id)}
                 className={`w-full text-left px-3 py-2 flex flex-col gap-0.5 ${
-                  repo.kind !== "cli" ? "group-hover:pr-14" : ""
+                  repo.kind !== "cli" && !readonly ? "group-hover:pr-14" : ""
                 }`}
                 title={repo.location}
               >
@@ -188,7 +191,7 @@ export function RepoPanel({
                   <StatusLine repo={repo} models={models} />
                 </span>
               </button>
-              {repo.kind !== "cli" && (
+              {repo.kind !== "cli" && !readonly && (
                 <div className="absolute right-1.5 top-2 hidden gap-0.5 group-hover:flex">
                   <button
                     disabled={busy}
