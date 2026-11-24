@@ -1486,7 +1486,7 @@ export default function App() {
       flexDirection: "column", gap: 12,
     }}>
       <div>⚠ Error loading diff</div>
-      <div style={{ fontSize: 11, color: "#7f1d1d" }}>{error}</div>
+      <div style={{ fontSize: 12, color: "#fca5a5", maxWidth: 560, textAlign: "center", lineHeight: 1.6 }}>{error}</div>
     </div>
   );
 

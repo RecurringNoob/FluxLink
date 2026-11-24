@@ -131,7 +131,7 @@ def main(before_file, after_file, viewer, stackup, layers):
     if viewer:
         try:
             from fluxdiff.viewer.server import run_viewer_server
-            print("\nStarting Flask API on http://localhost:5000")
+            print("\nStarting Flask API on http://127.0.0.1:5000 (Ctrl+C to stop)")
             print("React viewer: built app on :5000, or the Vite dev server on :5173")
             print("(Run 'npm install && npm run dev' in fluxdiff-ui/fluxlink/ if it is not running)")
             run_viewer_server(diff_report, power_tree_report)

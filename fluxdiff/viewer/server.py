@@ -22,6 +22,7 @@ import threading
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": [
     "http://localhost:5173",   # Vite dev server
+    "http://127.0.0.1:5173",
     "http://localhost:3000",   # CRA fallback
 ]}})
 
@@ -192,7 +193,8 @@ def run_viewer_server(diff_result=None, power_tree_report=""):
     # Open the built app on :5000 when it exists, otherwise the Vite dev server.
     url = "http://localhost:5000" if os.path.isdir(FRONTEND_BUILD) else VITE_DEV_URL
     threading.Timer(1, lambda: webbrowser.open(url)).start()
-    app.run(host="localhost", port=5000, use_reloader=False)
+    # Bind IPv4 explicitly; the Vite proxy targets 127.0.0.1:5000.
+    app.run(host="127.0.0.1", port=5000, use_reloader=False)
 
 
 if __name__ == "__main__":

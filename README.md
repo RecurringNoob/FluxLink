@@ -55,7 +55,7 @@ fluxlink before.kicad_pcb after.kicad_pcb --stackup stackup.yaml
 fluxlink before.kicad_pcb after.kicad_pcb --viewer
 ```
 
-`--viewer` starts the Flask API on `http://localhost:5000`. If you have run
+`--viewer` starts the Flask API on `http://127.0.0.1:5000` and keeps it running in that terminal. If you have run
 `npm run build` in `fluxdiff-ui/fluxlink`, Flask serves the viewer itself on
 :5000; otherwise run `npm run dev` there and open `http://localhost:5173`.
 Set `FLUXLINK_FRONTEND_DIST` to serve a build from another location.
