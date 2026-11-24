@@ -25,10 +25,10 @@ AND the name is empty or absent, not unconditionally. This prevents a
 malformed file from silently dropping a real net named on ID 0.
 
 ARC/ZONE/OUTLINE additions:
-  - extract_board_outline: reads Edge.Cuts gr_line, gr_arc, gr_circle nodes
-    to find the tight bounding box of the board outline in absolute KiCad mm.
-    This is the correct origin for SVG coordinate mapping (kicad-cli shifts
-    the board to origin 0,0 when --page-size-mode 2 is used).
+  - extract_board_outline: reads Edge.Cuts shapes (board and footprint) to
+    find the tight bounding box of the board outline in absolute KiCad mm.
+  - extract_outline_anchors: Edge.Cuts points that plotters write verbatim,
+    used by visual/svg_frame.py to locate the board inside exported SVGs.
   - extract_arcs: parses gr_arc nodes on copper layers into Arc objects.
     gr_arc nodes on Edge.Cuts are excluded (they are outline, not routing).
   - extract_zones: parses zone nodes into Zone objects, capturing net, layer
@@ -97,6 +97,7 @@ def parse_pcb(file_path):
     arcs = extract_arcs(root, index, nets)
     zones = extract_zones(index, nets)
     board_outline = extract_board_outline(root)
+    outline_anchors = extract_outline_anchors(root)
 
     return PCBData(
         components=components,
@@ -106,6 +107,7 @@ def parse_pcb(file_path):
         arcs=arcs,
         zones=zones,
         board_outline=board_outline,
+        outline_anchors=outline_anchors,
     )
 
 
@@ -644,6 +646,77 @@ def _node_layer(node):
 _EDGE_SHAPES = {"line", "rect", "arc", "circle", "poly", "curve"}
 
 
+def _edge_cut_items(root):
+    """
+    Yield (shape_node, to_board) for every Edge.Cuts shape: top-level gr_*
+    items, and fp_* items inside footprints with their local -> board
+    transform.
+    """
+    identity = lambda x, y: (x, y)
+    for node in root.children:
+        if node.name.startswith("gr_") and node.name[3:] in _EDGE_SHAPES:
+            if "Edge.Cuts" in _node_layer(node):
+                yield node, identity
+        elif node.name in ("footprint", "module"):
+            fp_at = _xy(node, "at") or (0.0, 0.0)
+            fp_rot = 0.0
+            for c in node.children:
+                if c.name == "at" and len(c.values) >= 3:
+                    try:
+                        fp_rot = float(c.values[2])
+                    except ValueError:
+                        pass
+
+            def to_board(x, y, fx=fp_at[0], fy=fp_at[1], rot=fp_rot):
+                rx, ry = _rotate_point(x, y, rot)
+                return fx + rx, fy + ry
+
+            for child in node.children:
+                if (child.name.startswith("fp_") and child.name[3:] in _EDGE_SHAPES
+                        and "Edge.Cuts" in _node_layer(child)):
+                    yield child, to_board
+
+
+def _anchor_points(node):
+    """Points of one shape that a plotter writes as-is (see outline_anchors)."""
+    kind = node.name.split("_", 1)[-1]
+    if kind == "line":
+        return [p for p in (_xy(node, "start"), _xy(node, "end")) if p]
+    if kind == "rect":
+        s, e = _xy(node, "start"), _xy(node, "end")
+        if s and e:
+            return [s, (e[0], s[1]), e, (s[0], e[1])]
+        return []
+    if kind == "arc":
+        return [p for p in (_xy(node, "start"), _xy(node, "end")) if p]
+    if kind == "circle":
+        c = _xy(node, "center")
+        return [c] if c else []
+    if kind in ("poly", "curve"):
+        pts = []
+        for c in node.children:
+            if c.name != "pts":
+                continue
+            for item in c.children:
+                if item.name == "xy" and len(item.values) >= 2:
+                    try:
+                        pts.append((float(item.values[0]), float(item.values[1])))
+                    except ValueError:
+                        pass
+                elif item.name == "arc":
+                    pts.extend(p for p in (_xy(item, "start"), _xy(item, "end")) if p)
+        return pts
+    return []
+
+
+def extract_outline_anchors(root):
+    """Board-space anchor points of every Edge.Cuts shape (see PCBData.outline_anchors)."""
+    anchors = []
+    for node, to_board in _edge_cut_items(root):
+        anchors.extend(to_board(x, y) for x, y in _anchor_points(node))
+    return anchors
+
+
 def extract_board_outline(root):
     """
     Collect every Edge.Cuts shape — top-level gr_line / gr_rect / gr_arc /
@@ -654,12 +727,9 @@ def extract_board_outline(root):
 
     Returns None if no Edge.Cuts geometry is found.
 
-    This bounding box is the correct origin for SVG coordinate mapping:
-    kicad-cli --page-size-mode 2 shifts the board so that the Edge.Cuts
-    top-left corner maps to SVG coordinate (0, 0).  Markers must therefore
-    be placed at:
-        svg_x = kicad_x - min_x
-        svg_y = kicad_y - min_y
+    Note: kicad-cli's "board area only" SVG is NOT framed on this box (it
+    uses KiCad's item bounding box, which can be larger).  The CLI crops
+    each SVG to the diff's board_bounds with visual/svg_frame.py.
     """
     xs, ys = [], []
 
@@ -668,32 +738,14 @@ def extract_board_outline(root):
             xs.append(x)
             ys.append(y)
 
-    for node in root.children:
-        if node.name.startswith("gr_") and node.name[3:] in _EDGE_SHAPES:
-            if "Edge.Cuts" in _node_layer(node):
-                add(_shape_points(node))
-
-        elif node.name in ("footprint", "module"):
-            fp_at = _xy(node, "at") or (0.0, 0.0)
-            fp_rot = 0.0
-            for c in node.children:
-                if c.name == "at" and len(c.values) >= 3:
-                    try:
-                        fp_rot = float(c.values[2])
-                    except ValueError:
-                        pass
-            for child in node.children:
-                if (child.name.startswith("fp_") and child.name[3:] in _EDGE_SHAPES
-                        and "Edge.Cuts" in _node_layer(child)):
-                    # Footprint items are stored in the footprint's local frame.
-                    # Rotating a bbox's corners and re-boxing stays conservative.
-                    local = _shape_points(child)
-                    if len(local) == 2:
-                        (x0, y0), (x1, y1) = local
-                        local = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
-                    for lx, ly in local:
-                        rx, ry = _rotate_point(lx, ly, fp_rot)
-                        add([(fp_at[0] + rx, fp_at[1] + ry)])
+    for node, to_board in _edge_cut_items(root):
+        local = _shape_points(node)
+        if node.name.startswith("fp_") and len(local) == 2:
+            # Footprint items are stored in the footprint's local frame.
+            # Rotating a bbox's corners and re-boxing stays conservative.
+            (x0, y0), (x1, y1) = local
+            local = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+        add(to_board(x, y) for x, y in local)
 
     if not xs:
         return None

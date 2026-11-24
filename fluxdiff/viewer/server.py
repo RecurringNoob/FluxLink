@@ -115,18 +115,13 @@ def board_bounds():
     """
     Serve the board bounding box in mm and coordinate offset for the viewer.
 
-    The React viewer uses board_bounds to map KiCad mm coordinates to the
-    SVG coordinate space:
+    The CLI crops before.svg / after.svg to exactly these bounds, so the
+    viewer maps a KiCad mm coordinate to the image as
 
-        svg_x = kicad_x - offset_x
-        svg_y = kicad_y - offset_y
+        fraction_x = (kicad_x - min_x) / (max_x - min_x)
+        fraction_y = (kicad_y - min_y) / (max_y - min_y)
 
-    offset_x/offset_y equal min_x/min_y when the bounds are derived from
-    Edge.Cuts (the accurate path).  They are provided as separate keys so
-    the viewer does not need to know whether the bounds have a margin.
-
-    The SVG internal unit is mm, so the viewer multiplies svg_x by
-    (svg_element_width_px / board_width_mm) to get pixel coordinates.
+    offset_x/offset_y equal min_x/min_y.
     """
     diff_result = app.config.get("DIFF_RESULT")
     bounds = diff_result.board_bounds if diff_result else None

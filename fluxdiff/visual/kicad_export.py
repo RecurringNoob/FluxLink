@@ -8,7 +8,8 @@ from fluxdiff.visual.constants import EXPORT_SCALE
 # F.Cu + B.Cu: front and back copper (segments, pads, zones).
 # F.SilkS + B.SilkS: front and back silkscreen (component outlines, refs).
 # F.Mask + B.Mask: solder mask openings (shows pad sizes accurately).
-# Edge.Cuts: board outline — required for --page-size-mode 2 to work correctly.
+# Edge.Cuts: board outline — required: visual/svg_frame.py locates the board
+#            in the SVG from it, to crop the image to the board frame.
 #
 # The viewer SVG uses --mode-single (all layers merged into one file) so the
 # existing single-SVG viewer pipeline is unchanged.  Callers can pass a
@@ -61,66 +62,21 @@ def export_pcb_svg(pcb_file: str, output_svg: str, layers: str = DEFAULT_LAYERS)
     print(f"✅ SVG exported: {output_svg}")
 
 
-def export_pcb_png(pcb_file: str, output_png: str, layers: str = DEFAULT_LAYERS):
+def svg_to_png(svg_file: str, output_png: str):
     """
-    Export a KiCad PCB file as a PNG (SVG → cairosvg → PNG).
-
-    Used as input for image_diff.py (copper pixel diff).
-    The PNG is an intermediate — it is not served directly to the viewer,
-    which uses the SVG from export_pcb_svg instead.
-
-    layers — same as export_pcb_svg.  Keeping both exports on the same layer
-             set ensures the pixel diff and the SVG overlay are comparing
-             the same visual content.
-
-    Raises RuntimeError if kicad-cli or cairosvg fails.
+    Rasterise an (already cropped) SVG at EXPORT_SCALE.  Rasterising the
+    same file the viewer shows keeps the PNG, the pixel diff and the
+    component overlay in the viewer's frame (see visual/svg_frame.py).
     """
+    import cairosvg  # deferred: needs the system cairo library
+
     output_dir = os.path.dirname(output_png)
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
-
-    svg_file = output_png.replace(".png", "_tmp.svg")
-
-    try:
-        subprocess.run(
-            [
-                "kicad-cli", "pcb", "export", "svg",
-                pcb_file,
-                "--layers", layers,
-                "--page-size-mode", "2",
-                "--theme", "kicad_default",
-                "--output", svg_file,
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-    except subprocess.CalledProcessError as e:
-        raise RuntimeError(
-            f"kicad-cli failed for {pcb_file}:\n{e.stderr}"
-        ) from e
-
-    if not os.path.isfile(svg_file):
-        raise RuntimeError(f"kicad-cli did not produce an SVG at {svg_file}")
-
-    import cairosvg  # deferred: needs the system cairo library
-
     try:
         cairosvg.svg2png(url=svg_file, write_to=output_png, scale=EXPORT_SCALE)
     except Exception as e:
-        raise RuntimeError(
-            f"CairoSVG conversion failed for {svg_file}: {e}"
-        ) from e
-
+        raise RuntimeError(f"CairoSVG conversion failed for {svg_file}: {e}") from e
     if not os.path.isfile(output_png) or os.path.getsize(output_png) == 0:
-        raise RuntimeError(
-            f"PNG was not generated or is empty: {output_png}."
-        )
-
-    # Clean up temp SVG (the viewer-facing SVG is produced by export_pcb_svg)
-    try:
-        os.remove(svg_file)
-    except OSError:
-        pass
-
+        raise RuntimeError(f"PNG was not generated or is empty: {output_png}.")
     print(f"✅ PNG exported: {output_png}")

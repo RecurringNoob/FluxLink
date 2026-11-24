@@ -87,7 +87,7 @@ All files are written to `output/` in the working directory.
 | File | Description |
 |---|---|
 | `output/diff_report.txt` | Full text diff report |
-| `output/before.svg` / `output/after.svg` | Board SVGs (viewer backgrounds) |
+| `output/before.svg` / `output/after.svg` | Board SVGs (viewer backgrounds), both cropped to the same board frame so markers line up |
 | `output/diff_overlay.png` | Pixel-level red/green diff image |
 | `output/component_diff.png` | Annotated component change markers |
 

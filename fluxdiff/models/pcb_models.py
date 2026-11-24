@@ -92,9 +92,13 @@ class PCBData:
     arcs: List[Arc] = field(default_factory=list)
     zones: List[Zone] = field(default_factory=list)
     # Edge.Cuts bounding box in KiCad absolute mm coordinates.
-    # Populated by extract_board_outline(); used by the diff engine to convert
-    # KiCad mm → SVG/pixel space correctly (SVG origin = board_outline top-left).
+    # Populated by extract_board_outline(); the diff engine derives
+    # DiffResult.board_bounds from it.
     board_outline: Optional[Tuple[float, float, float, float]] = None  # (min_x, min_y, max_x, max_y)
+    # Points KiCad writes verbatim when plotting Edge.Cuts (line/arc end
+    # points, rect corners, polygon vertices, circle centres), in board mm.
+    # visual/svg_frame.py uses them to locate the board inside an exported SVG.
+    outline_anchors: List[Tuple[float, float]] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -199,9 +203,10 @@ class DiffResult:
     summary: str = ""
     graph_old: Dict[str, Set] = field(default_factory=dict)
     graph_new: Dict[str, Set] = field(default_factory=dict)
-    # Board spatial bounds in mm — populated by diff_engine from Edge.Cuts geometry.
-    # Used by the React viewer to map KiCad mm coordinates -> overlay pixels.
-    # Format: {"min_x", "min_y", "max_x", "max_y", "offset_x", "offset_y"}
-    # offset_x/offset_y equal min_x/min_y and are provided explicitly so the
-    # viewer can compute:  svg_x = kicad_x - offset_x  without recomputing.
+    # Shared board frame in mm: union of both boards' Edge.Cuts outlines plus
+    # a margin.  The CLI crops before.svg/after.svg (and so the PNGs) to
+    # exactly this rectangle, so a board point maps to the image fraction
+    #   ((x - min_x) / (max_x - min_x), (y - min_y) / (max_y - min_y)).
+    # Format: {"min_x", "min_y", "max_x", "max_y", "offset_x", "offset_y"};
+    # offset_x/offset_y equal min_x/min_y.
     board_bounds: Optional[dict] = None

@@ -113,3 +113,15 @@ def test_component_details_have_positions():
     assert details["added"]["to"] == {"x": 9, "y": 9}
     assert details["removed"]["from"] == {"x": 5, "y": 5}
     assert details["moved"]["from"] == {"x": 1, "y": 2} and details["moved"]["to"] == {"x": 3, "y": 4}
+
+
+def test_floating_net_marker_is_on_the_floating_pad():
+    from fluxdiff.parser.pcb_parser import parse_pcb as _parse
+    result = compare_pcbs(_parse(BOARDS / "before3.kicad_pcb"), _parse(BOARDS / "after3.kicad_pcb"))
+    coords = {f.message: f.coordinates for f in result.erc_findings}
+    # U2 pad 14 is at (117.09, 143.75); pad 1 is at (118.36, 133.11).
+    x, y = coords["Net 'Net-(U2-Pad14)' is floating (only one real connection: U2)"]
+    assert (round(x, 2), round(y, 2)) == (117.09, 143.75)
+    # All six floating U2 nets get distinct markers.
+    u2 = {c for m, c in coords.items() if m.startswith("Net 'Net-(U2-Pad")}
+    assert len(u2) == 6

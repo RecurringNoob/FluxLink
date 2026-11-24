@@ -3,7 +3,8 @@ import click
 
 from fluxdiff.parser.pcb_parser import parse_pcb
 from fluxdiff.diff.diff_engine import compare_pcbs
-from fluxdiff.visual.kicad_export import export_pcb_svg, export_pcb_png, DEFAULT_LAYERS
+from fluxdiff.visual.kicad_export import export_pcb_svg, svg_to_png, DEFAULT_LAYERS
+from fluxdiff.visual.svg_frame import crop_svg_file
 from fluxdiff.visual.image_diff import generate_visual_diff
 from fluxdiff.visual.component_diff import generate_component_visual_diff
 from fluxdiff.analysis.power_tree import analyse_power_tree, format_power_tree_report
@@ -78,8 +79,8 @@ def main(before_file, after_file, viewer, stackup, layers):
     diff_png   = os.path.join(output_dir, "diff_overlay.png")
     component_diff_png = os.path.join(output_dir, "component_diff.png")
 
-    # 5. Export SVGs (primary: viewer board backgrounds)
-    #    Export PNGs (secondary: inputs for image_diff pixel comparison)
+    # 5. Export SVGs (viewer board backgrounds), crop both to the shared
+    #    board frame, then rasterise those same SVGs for the pixel diff.
     svgs_ok = False
     pngs_ok = False
 
@@ -90,12 +91,20 @@ def main(before_file, after_file, viewer, stackup, layers):
     except Exception as e:
         print(f"\n[WARNING] PCB SVG export failed: {e}")
 
-    try:
-        export_pcb_png(before_file, before_png, layers=layers)
-        export_pcb_png(after_file,  after_png,  layers=layers)
-        pngs_ok = True
-    except Exception as e:
-        print(f"\n[WARNING] PCB PNG export failed: {e}")
+    if svgs_ok:
+        # kicad-cli frames "board area only" exports on KiCad's item bounding
+        # box, not on Edge.Cuts; crop so image and marker coordinates agree.
+        for path, pcb in ((before_svg, before_pcb), (after_svg, after_pcb)):
+            if not crop_svg_file(path, pcb.outline_anchors, diff_report.board_bounds):
+                print(f"[WARNING] Could not locate the board outline in {path}; "
+                      f"viewer markers may be offset (is Edge.Cuts in --layers?)")
+
+        try:
+            svg_to_png(before_svg, before_png)
+            svg_to_png(after_svg,  after_png)
+            pngs_ok = True
+        except Exception as e:
+            print(f"\n[WARNING] PCB PNG export failed: {e}")
 
     # 6. Pixel diff overlay (unchanged — still uses PNGs)
     if pngs_ok:

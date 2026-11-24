@@ -20,33 +20,14 @@ TRACE_ROUND    = 5
 # Board bounds — needed by the React viewer for mm → pixel coordinate mapping
 # ---------------------------------------------------------------------------
 
-def _board_bounds_from_outline(pcb: PCBData) -> dict:
-    """
-    Derive the board bounding box from the parsed Edge.Cuts outline stored
-    in pcb.board_outline.  Falls back to scanning component/trace/via
-    positions with a margin when no outline is available.
+# Space kept around the outline so the Edge.Cuts line itself is not clipped.
+OUTLINE_MARGIN_MM = 0.25
 
-    Returns a dict with keys: min_x, min_y, max_x, max_y, offset_x, offset_y.
-    offset_x/offset_y are identical to min_x/min_y and are provided explicitly
-    so the viewer can compute: svg_x = kicad_x - offset_x without subtracting
-    min_x (which callers might confuse as a margin-adjusted value).
 
-    Crucially: when board_outline is available, NO margin is added.  The
-    outline IS the board edge, and kicad-cli --page-size-mode 2 uses it
-    directly as the SVG origin, so adding any margin would mis-align markers.
-    """
+def _pcb_extent(pcb: PCBData):
+    """(min_x, min_y, max_x, max_y, from_outline) for one board, or None."""
     if pcb.board_outline is not None:
-        min_x, min_y, max_x, max_y = pcb.board_outline
-        return {
-            "min_x":    min_x,
-            "min_y":    min_y,
-            "max_x":    max_x,
-            "max_y":    max_y,
-            "offset_x": min_x,
-            "offset_y": min_y,
-        }
-
-    # Fallback: scan geometry
+        return (*pcb.board_outline, True)
     xs, ys = [], []
     for comp in pcb.components:
         if not comp.is_power_symbol:
@@ -58,22 +39,37 @@ def _board_bounds_from_outline(pcb: PCBData) -> dict:
     for via in pcb.vias:
         xs.append(via.x)
         ys.append(via.y)
-
     if not xs:
+        return None
+    return (min(xs), min(ys), max(xs), max(ys), False)
+
+
+def _board_bounds(old_pcb: PCBData, new_pcb: PCBData) -> dict:
+    """
+    Board-space rectangle (KiCad mm) that every board image is cropped to
+    (visual/svg_frame.py) and that the viewer maps onto the image.
+
+    It is the union of both boards' Edge.Cuts outlines plus a small margin,
+    so the before and after images share one frame even when the outline
+    changed.  Without an outline, component/trace/via positions are used with
+    a 2 mm margin.
+
+    Returns min_x, min_y, max_x, max_y and offset_x/offset_y (= min_x/min_y,
+    kept for callers that compute  image_x = kicad_x - offset_x).
+    """
+    extents = [e for e in (_pcb_extent(old_pcb), _pcb_extent(new_pcb)) if e]
+    if not extents:
         return {"min_x": 0, "min_y": 0, "max_x": 100, "max_y": 100,
                 "offset_x": 0, "offset_y": 0}
+    margin = OUTLINE_MARGIN_MM if all(e[4] for e in extents) else 2.0
+    min_x = min(e[0] for e in extents) - margin
+    min_y = min(e[1] for e in extents) - margin
+    max_x = max(e[2] for e in extents) + margin
+    max_y = max(e[3] for e in extents) + margin
+    return {"min_x": min_x, "min_y": min_y, "max_x": max_x, "max_y": max_y,
+            "offset_x": min_x, "offset_y": min_y}
 
-    margin = 2.0
-    min_x = min(xs) - margin
-    min_y = min(ys) - margin
-    return {
-        "min_x":    min_x,
-        "min_y":    min_y,
-        "max_x":    max(xs) + margin,
-        "max_y":    max(ys) + margin,
-        "offset_x": min_x,
-        "offset_y": min_y,
-    }
+
 # ---------------------------------------------------------------------------
 # _tag — works on set[Finding] (frozen dataclass → hashable)
 #
@@ -167,9 +163,8 @@ def compare_pcbs(old_pcb: PCBData, new_pcb: PCBData,
     result.graph_old = graph_old
     result.graph_new = graph_new
 
-    # Board bounds from the after board (used by viewer for coordinate mapping).
-    # Uses Edge.Cuts outline when available for exact alignment with the SVG.
-    result.board_bounds = _board_bounds_from_outline(new_pcb)
+    # Shared frame for both board images and the viewer's coordinate mapping.
+    result.board_bounds = _board_bounds(old_pcb, new_pcb)
 
     connectivity_changes = compare_connectivity(graph_old, graph_new)
     result.net_changes.extend(

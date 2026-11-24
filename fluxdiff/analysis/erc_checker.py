@@ -91,26 +91,40 @@ def _power_pin_position(comp, net_name):
     return comp.x, comp.y
 
 
-def _nearest_pad_position(comp):
+def _pad_position(comp, pad_number):
+    """
+    Board position of one pad.  Previously findings used the component's
+    FIRST pad, so "Net-(U2-Pad14) is floating" was drawn on U2 pad 1 and all
+    of an IC's floating nets were stacked on the same spot.
+    """
     for pad in comp.pads:
-        if pad.has_explicit_position:
+        if pad.number == pad_number and pad.has_explicit_position:
             return pad.x, pad.y
     return comp.x, comp.y
 
 
+def _closest_pad_on_net(comp, net_name, x, y):
+    """The component's pad on net_name closest to (x, y)."""
+    pads = [p for p in comp.pads if p.net == net_name and p.has_explicit_position]
+    if not pads:
+        return comp.x, comp.y
+    best = min(pads, key=lambda p: _distance(p.x, p.y, x, y))
+    return best.x, best.y
+
+
 def _net_centroid(net_name, connections, comp_lookup):
     """
-    Return the centroid (x, y) of all pad positions on this net, or None
-    if no positioned components are found.  Used for pullup and floating-net
-    findings where there is no single canonical component.
+    Return the centroid (x, y) of the pads connected to this net, or None
+    if no positioned components are found.  Used for pull-up findings where
+    there is no single canonical component.
     """
     xs, ys = [], []
-    for ref, _ in connections:
+    for ref, pad_number in connections:
         if ref == "VIA" or _is_power_symbol(ref):
             continue
         comp = comp_lookup.get(ref)
         if comp:
-            x, y = _nearest_pad_position(comp)
+            x, y = _pad_position(comp, pad_number)
             xs.append(x)
             ys.append(y)
     if not xs:
@@ -169,7 +183,8 @@ def _check_bypass_caps(graph, comp_lookup) -> list:
             ic = comp_lookup[ic_ref]
             ic_px, ic_py = _power_pin_position(ic, net_name)
             nearby = any(
-                _distance(ic_px, ic_py, *_nearest_pad_position(comp_lookup[cap_ref]))
+                _distance(ic_px, ic_py,
+                          *_closest_pad_on_net(comp_lookup[cap_ref], net_name, ic_px, ic_py))
                 <= BYPASS_CAP_RADIUS_MM
                 for cap_ref in caps_on_net
                 if cap_ref in comp_lookup
@@ -238,9 +253,9 @@ def _check_floating_nets(graph, comp_lookup) -> list:
                 affected_nets=(net_name,),
             ))
         elif len(real_conns) == 1:
-            only_ref = next(iter(real_conns))[0]
+            only_ref, only_pad = next(iter(real_conns))
             comp = comp_lookup.get(only_ref)
-            coords = _nearest_pad_position(comp) if comp else None
+            coords = _pad_position(comp, only_pad) if comp else None
             findings.append(Finding(
                 severity="WARNING",
                 category=CAT,

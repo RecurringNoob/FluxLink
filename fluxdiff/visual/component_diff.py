@@ -15,9 +15,9 @@ def generate_component_visual_diff(before_png, after_png, before_components, aft
     """
     Generate a component-level visual diff overlay.
 
-    board_bounds — dict with keys offset_x, offset_y (in KiCad absolute mm)
-    from DiffResult.board_bounds.  When provided, KiCad mm coordinates are
-    converted to SVG-space pixels by subtracting the board origin first:
+    board_bounds — DiffResult.board_bounds.  The PNGs are rasterised from
+    SVGs cropped to these bounds (visual/svg_frame.py), so KiCad mm map to
+    PNG pixels by subtracting the frame origin first:
 
         svg_x = kicad_x - offset_x
         svg_y = kicad_y - offset_y
