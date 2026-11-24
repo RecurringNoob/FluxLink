@@ -18,6 +18,7 @@ All other logic, tunables, and fix annotations are unchanged.
 
 from math import hypot
 from fluxdiff.models.pcb_models import Finding
+from fluxdiff.analysis.net_names import is_voltage_rail_name
 
 I2C_NET_SUBSTRINGS = ("SDA", "SCL")
 OPEN_DRAIN_NET_SUBSTRINGS = ("OD", "OPEN_DRAIN", "OPENDRAIN", "INT", "ALERT", "NRST", "RESET")
@@ -58,7 +59,8 @@ def _real_connections(connections):
 
 def _net_is_power(net_name):
     upper = net_name.upper()
-    return any(sub in upper for sub in POWER_NET_SUBSTRINGS)
+    return (any(sub in upper for sub in POWER_NET_SUBSTRINGS)
+            or is_voltage_rail_name(net_name))
 
 def _net_needs_pullup(net_name):
     upper = net_name.upper()

@@ -27,11 +27,13 @@ class GitLoader:
         output = self._run_git_command([
             "git", "log",
             f"--max-count={max_count}",
-            "--pretty=format:%H|%s|%an|%ad",
+            # ASCII unit/record separators cannot appear in commit subjects,
+            # unlike "|" which broke parsing of messages such as "fix | tweak".
+            "--pretty=format:%H%x1f%s%x1f%an%x1f%ad%x1e",
         ])
         commits = []
-        for line in output.split("\n"):
-            parts = line.split("|")
+        for record in output.split("\x1e"):
+            parts = record.strip().split("\x1f")
             if len(parts) < 4:
                 continue
             commits.append(CommitInfo(

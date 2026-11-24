@@ -1,10 +1,17 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import { TransformWrapper, TransformComponent, useTransformContext } from "react-zoom-pan-pinch";
+import { TransformWrapper, TransformComponent, useTransformComponent } from "react-zoom-pan-pinch";
 import type { ReactZoomPanPinchRef } from "react-zoom-pan-pinch";
 import { fetchDiff, BOARD_URLS } from "../api";
-import type { Finding, ViewMode, DiffResponse, BoardBounds, Severity } from "../types/finding";
+import type { Finding, FindingStatus, ViewMode, DiffResponse, BoardBounds, Severity } from "../types/finding";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
+
+const STATUS_COLOR: Record<FindingStatus, string> = {
+  NEW:      "#ef4444",
+  EXISTING: "#94a3b8",
+  FIXED:    "#22c55e",
+};
+const ALL_STATUSES: FindingStatus[] = ["NEW", "EXISTING", "FIXED"];
 
 const SEVERITY_COLOR: Record<Severity, string> = {
   CRITICAL: "#ef4444",
@@ -17,6 +24,13 @@ const SEVERITY_BG: Record<Severity, string> = {
   WARNING:  "rgba(245,158,11,0.10)",
   INFO:     "rgba(34,197,94,0.08)",
 };
+
+// Constant, so it lives at module level: a Set created inside the component
+// changes identity every render and defeats the useMemo that depends on it.
+const COMP_TYPE_FILTER = new Set([
+  "added", "removed", "moved", "swapped", "value",
+  "footprint", "layer", "rotation", "reconnected", "annotated",
+]);
 
 const CATEGORY_LABEL: Record<string, string> = {
   ERC:       "ERC",
@@ -473,8 +487,10 @@ function MarkerLayerInner({
   showCompMarkers: boolean;
   imgRect: ImageRect;
 }) {
-  const { state } = useTransformContext();
-  const scale = state.scale;
+  // useTransformContext() returns the library instance, which has no `.state`
+  // (reading it threw at runtime). useTransformComponent subscribes to zoom
+  // changes and re-renders with the current scale.
+  const scale = useTransformComponent(({ state }) => state.scale);
 
   // Position a marker at (mmX, mmY) in pixel space within the image rect
   function pxPos(mmX: number, mmY: number) {
@@ -723,6 +739,7 @@ function FindingCard({
         cursor: "pointer",
         background: active ? `${color}20` : bg,
         border: `1px solid ${active ? color : "transparent"}`,
+        opacity: finding.status === "FIXED" && !active ? 0.6 : 1,
         transition: "border-color 0.15s, background 0.15s",
       }}
     >
@@ -744,9 +761,26 @@ function FindingCard({
           color: "#cbd5e1",
           lineHeight: 1.5,
           fontFamily: "'IBM Plex Mono', monospace",
+          textDecoration: finding.status === "FIXED" ? "line-through" : "none",
         }}>
           {finding.message}
         </span>
+        {finding.status && (
+          <span style={{
+            fontSize: 8,
+            fontWeight: 800,
+            letterSpacing: "0.06em",
+            padding: "1px 5px",
+            borderRadius: 3,
+            marginTop: 2,
+            flexShrink: 0,
+            color: STATUS_COLOR[finding.status],
+            border: `1px solid ${STATUS_COLOR[finding.status]}55`,
+            fontFamily: "'IBM Plex Mono', monospace",
+          }}>
+            {finding.status}
+          </span>
+        )}
       </div>
 
       <div style={{ display: "flex", gap: 8, marginTop: 5, flexWrap: "wrap", alignItems: "center" }}>
@@ -911,15 +945,22 @@ function FindingsPanel({
 }) {
   const [search, setSearch]             = useState("");
   const [severityFilter, setSeverity]   = useState<Set<Severity>>(new Set(["CRITICAL","WARNING","INFO"]));
+  const [statusFilter, setStatusFilter] = useState<Set<FindingStatus>>(new Set(ALL_STATUSES));
   const [openCategories, setOpenCats]   = useState<Set<string>>(
     () => new Set(["ERC","POWER","DIFF_PAIR","GROUND","IMPEDANCE","BOM","COMPONENT"])
   );
-  const compTypeFilter = new Set(["added","removed","moved","swapped","value","footprint","layer","rotation","reconnected","annotated"]);
 
   const toggleCat = (cat: string) =>
     setOpenCats((p) => {
       const n = new Set(p);
       if (n.has(cat)) { n.delete(cat); } else { n.add(cat); }
+      return n;
+    });
+
+  const toggleStatus = (s: FindingStatus) =>
+    setStatusFilter((p) => {
+      const n = new Set(p);
+      if (n.has(s)) { n.delete(s); } else { n.add(s); }
       return n;
     });
 
@@ -935,20 +976,21 @@ function FindingsPanel({
     const q = search.toLowerCase();
     return findings.filter((f) =>
       severityFilter.has(f.severity) &&
+      (!f.status || statusFilter.has(f.status)) &&
       (f.message.toLowerCase().includes(q) ||
        f.related_refs.some((r) => r.toLowerCase().includes(q)) ||
        f.category.toLowerCase().includes(q))
     );
-  }, [findings, search, severityFilter]);
+  }, [findings, search, severityFilter, statusFilter]);
 
   // Filter comp changes
   const filteredComps = useMemo(() => {
     const q = search.toLowerCase();
     return compChanges.filter((c) =>
-      compTypeFilter.has(c.type) &&
+      COMP_TYPE_FILTER.has(c.type) &&
       (c.ref.toLowerCase().includes(q) || c.message.toLowerCase().includes(q))
     );
-  }, [compChanges, search, compTypeFilter]);
+  }, [compChanges, search]);
 
   const byCategory = useMemo(() =>
     filteredFindings.reduce<Record<string, Finding[]>>((acc, f) => {
@@ -958,8 +1000,11 @@ function FindingsPanel({
     [filteredFindings]
   );
 
-  const critCount = findings.filter((f) => f.severity === "CRITICAL").length;
-  const warnCount = findings.filter((f) => f.severity === "WARNING").length;
+  // Counts describe the current board, so FIXED findings are excluded.
+  const critCount = findings.filter((f) => f.severity === "CRITICAL" && f.status !== "FIXED").length;
+  const warnCount = findings.filter((f) => f.severity === "WARNING" && f.status !== "FIXED").length;
+  const statusCounts: Record<FindingStatus, number> = { NEW: 0, EXISTING: 0, FIXED: 0 };
+  for (const f of findings) if (f.status) statusCounts[f.status] += 1;
 
   return (
     <div style={{
@@ -1072,6 +1117,26 @@ function FindingsPanel({
                 ✓ All clear
               </span>
             )}
+            {ALL_STATUSES.map((s) => statusCounts[s] > 0 && (
+              <button
+                key={s}
+                onClick={() => toggleStatus(s)}
+                style={{
+                  fontSize: 10,
+                  padding: "2px 8px",
+                  borderRadius: 4,
+                  background: statusFilter.has(s) ? `${STATUS_COLOR[s]}22` : "transparent",
+                  color: statusFilter.has(s) ? STATUS_COLOR[s] : "#475569",
+                  fontWeight: 700,
+                  border: `1px solid ${statusFilter.has(s) ? `${STATUS_COLOR[s]}55` : "#1e293b"}`,
+                  cursor: "pointer",
+                  fontFamily: "'IBM Plex Mono', monospace",
+                  transition: "all 0.15s",
+                }}
+              >
+                {statusCounts[s]} {s}
+              </button>
+            ))}
           </div>
         )}
 
@@ -1396,6 +1461,7 @@ export default function App() {
   // Also navigate when active finding changes via keyboard
   useEffect(() => {
     if (!activeFinding?.coordinates || !data?.board_bounds) return;
+    if (activeFinding.status === "FIXED") return; // coordinates are on the old board
     panToMm(afterTransformRef, activeFinding.coordinates.x, activeFinding.coordinates.y, data.board_bounds, 5, afterImgRectRef.current);
   }, [activeFinding, data]);
 
@@ -1422,11 +1488,14 @@ export default function App() {
     </div>
   );
 
-  const critCount = allFindings.filter((f) => f.severity === "CRITICAL").length;
-  const warnCount = allFindings.filter((f) => f.severity === "WARNING").length;
+  // FIXED findings are not issues on the new board, and their coordinates
+  // refer to the old board, so they are excluded from counts and markers.
+  const currentFindings = allFindings.filter((f) => f.status !== "FIXED");
+  const critCount = currentFindings.filter((f) => f.severity === "CRITICAL").length;
+  const warnCount = currentFindings.filter((f) => f.severity === "WARNING").length;
 
   // Decide what markers/components to pass to "after" board
-  const afterFindings = allFindings;
+  const afterFindings = currentFindings;
   const afterComps    = compChanges;
 
   return (

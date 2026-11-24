@@ -1,6 +1,7 @@
 from fluxdiff.models.pcb_models import PCBData, DiffResult, Finding
 import math
 import os
+from dataclasses import replace
 from fluxdiff.analysis.connectivity_graph import build_connectivity_graph, compare_connectivity
 from fluxdiff.analysis.erc_checker import run_erc_checks
 from fluxdiff.analysis.trace_connectivity import enrich_traces_with_connectivity
@@ -19,65 +20,60 @@ TRACE_ROUND    = 5
 # Board bounds — needed by the React viewer for mm → pixel coordinate mapping
 # ---------------------------------------------------------------------------
 
-def _compute_board_bounds(pcb: PCBData) -> dict:
+def _board_bounds_from_outline(pcb: PCBData) -> dict:
     """
-    Compute the bounding box of all positioned geometry in mm.
-    Includes component centroids, trace endpoints, and via positions.
-    Returns {"min_x", "min_y", "max_x", "max_y"} with a small margin.
-    """
-    xs, ys = [], []
+    Derive the board bounding box from the parsed Edge.Cuts outline stored
+    in pcb.board_outline.  Falls back to scanning component/trace/via
+    positions with a margin when no outline is available.
 
+    Returns a dict with keys: min_x, min_y, max_x, max_y, offset_x, offset_y.
+    offset_x/offset_y are identical to min_x/min_y and are provided explicitly
+    so the viewer can compute: svg_x = kicad_x - offset_x without subtracting
+    min_x (which callers might confuse as a margin-adjusted value).
+
+    Crucially: when board_outline is available, NO margin is added.  The
+    outline IS the board edge, and kicad-cli --page-size-mode 2 uses it
+    directly as the SVG origin, so adding any margin would mis-align markers.
+    """
+    if pcb.board_outline is not None:
+        min_x, min_y, max_x, max_y = pcb.board_outline
+        return {
+            "min_x":    min_x,
+            "min_y":    min_y,
+            "max_x":    max_x,
+            "max_y":    max_y,
+            "offset_x": min_x,
+            "offset_y": min_y,
+        }
+
+    # Fallback: scan geometry
+    xs, ys = [], []
     for comp in pcb.components:
         if not comp.is_power_symbol:
             xs.append(comp.x)
             ys.append(comp.y)
-
     for trace in pcb.traces:
         xs.extend([trace.start[0], trace.end[0]])
         ys.extend([trace.start[1], trace.end[1]])
-
     for via in pcb.vias:
         xs.append(via.x)
         ys.append(via.y)
 
     if not xs:
-        return {"min_x": 0, "min_y": 0, "max_x": 100, "max_y": 100}
+        return {"min_x": 0, "min_y": 0, "max_x": 100, "max_y": 100,
+                "offset_x": 0, "offset_y": 0}
 
-    margin = 2.0  # mm padding around the board
+    margin = 2.0
+    min_x = min(xs) - margin
+    min_y = min(ys) - margin
     return {
-        "min_x": min(xs) - margin,
-        "min_y": min(ys) - margin,
-        "max_x": max(xs) + margin,
-        "max_y": max(ys) + margin,
+        "min_x":    min_x,
+        "min_y":    min_y,
+        "max_x":    max(xs) + margin,
+        "max_y":    max(ys) + margin,
+        "offset_x": min_x,
+        "offset_y": min_y,
     }
-
-def _extract_svg_bounds(svg_path: str) -> dict | None:
-    """
-    Parse the viewBox from the exported SVG to get exact board bounds in mm.
-    KiCad SVG exports use mm units in the viewBox.
-    Falls back to None if parsing fails.
-    """
-    try:
-        import xml.etree.ElementTree as ET
-        tree = ET.parse(svg_path)
-        root = tree.getroot()
-        # Handle namespaced SVG
-        vb = root.get("viewBox") or root.get("viewbox")
-        if not vb:
-            return None
-        parts = vb.replace(",", " ").split()
-        if len(parts) != 4:
-            return None
-        min_x, min_y, width, height = map(float, parts)
-        return {
-            "min_x": min_x,
-            "min_y": min_y,
-            "max_x": min_x + width,
-            "max_y": min_y + height,
-        }
-    except Exception as e:
-        print(f"[WARNING] Could not parse SVG viewBox: {e}")
-        return None
 # ---------------------------------------------------------------------------
 # _tag — works on set[Finding] (frozen dataclass → hashable)
 #
@@ -110,16 +106,39 @@ def _tag(old_set: set, new_set: set, dest_str: list, dest_findings: list,
     both     = sorted(new_set & old_set,  key=lambda f: (_severity_key(f), f.message))
     old_only = sorted(old_set - new_set,  key=lambda f: (_severity_key(f), f.message))
 
+    # Findings are copied with their status set (Finding is frozen).  FIXED
+    # findings are included so the viewer can list them with a FIXED badge;
+    # their coordinates refer to the OLD board, so the viewer must not draw
+    # markers for them on the new board.
     for f in new_only:
         dest_str.append(f"{pre}NEW: {f}")
-        dest_findings.append(f)
+        dest_findings.append(replace(f, status="NEW"))
     for f in both:
         dest_str.append(f"{pre}EXISTING: {f}")
-        dest_findings.append(f)
+        dest_findings.append(replace(f, status="EXISTING"))
     for f in old_only:
         dest_str.append(f"{pre}FIXED: {f}")
-        # Fixed findings still go into dest_findings so the viewer can show
-        # them with a "FIXED" badge — useful for confirming regressions cleared.
+        dest_findings.append(replace(f, status="FIXED"))
+
+
+_GROUP_PREFIXES = ("CONNECTIVITY:", "ERC NEW:", "ERC EXISTING:", "ERC FIXED:")
+_SEVERITY_RANK  = {"CRITICAL": 0, "WARNING": 1, "INFO": 2}
+
+
+def _net_change_key(line: str):
+    """
+    Ordering for net_changes: pad net changes first, then connectivity, then
+    ERC NEW / EXISTING / FIXED; within a group by severity, then text.
+    (A plain alphabetical sort interleaved all of these.)
+    """
+    group = 0
+    for i, p in enumerate(_GROUP_PREFIXES, start=1):
+        if line.startswith(p):
+            group = i
+            break
+    head = line.split(": ", 2)
+    sev_word = head[1] if group >= 2 and len(head) > 2 else head[0]
+    return (group, _SEVERITY_RANK.get(sev_word.strip(), 3), line)
 
 
 # ---------------------------------------------------------------------------
@@ -144,8 +163,9 @@ def compare_pcbs(old_pcb: PCBData, new_pcb: PCBData,
     result.graph_old = graph_old
     result.graph_new = graph_new
 
-    # Board bounds from the after board (used by viewer for coordinate mapping)
-    result.board_bounds = _compute_board_bounds(new_pcb)
+    # Board bounds from the after board (used by viewer for coordinate mapping).
+    # Uses Edge.Cuts outline when available for exact alignment with the SVG.
+    result.board_bounds = _board_bounds_from_outline(new_pcb)
 
     connectivity_changes = compare_connectivity(graph_old, graph_new)
     result.net_changes.extend(
@@ -187,8 +207,14 @@ def compare_pcbs(old_pcb: PCBData, new_pcb: PCBData,
     _tag(bom_old, bom_new,
          result.bom_changes, result.bom_findings, prefix="BOM")
 
-    result.net_changes.sort()
+    # Arc and zone routing diffs
+    arc_diff(old_pcb, new_pcb, result)
+    zone_diff(old_pcb, new_pcb, result)
+
+    result.net_changes.sort(key=_net_change_key)
     result.routing_changes.sort()
+    result.arc_changes.sort()
+    result.zone_changes.sort()
 
     def _n(lst, tag): return sum(1 for x in lst if x.startswith(tag))
 
@@ -397,3 +423,76 @@ def routing_diff(old_pcb, new_pcb, result):
         result.routing_changes.append(f"Via added: net {v[2]}, at ({v[0]}, {v[1]})")
     for v in old_v - new_v:
         result.routing_changes.append(f"Via removed: net {v[2]}, at ({v[0]}, {v[1]})")
+
+
+def arc_diff(old_pcb, new_pcb, result):
+    """
+    Diff copper arc segments (gr_arc on copper layers).
+
+    Key: (layer, start_rounded, mid_rounded, end_rounded, net, width_rounded)
+    Two arcs are considered identical if all six fields match within rounding.
+    The mid point uniquely identifies the arc even when start/end are reused.
+    """
+    def arc_key(a):
+        s = tuple(round(v, TRACE_ROUND) for v in a.start)
+        m = tuple(round(v, TRACE_ROUND) for v in a.mid)
+        e = tuple(round(v, TRACE_ROUND) for v in a.end)
+        return (a.layer, s, m, e, a.net, round(a.width, 3))
+
+    old_a = {arc_key(a) for a in old_pcb.arcs}
+    new_a = {arc_key(a) for a in new_pcb.arcs}
+
+    for a in new_a - old_a:
+        result.arc_changes.append(
+            f"Arc added: net {a[4]}, layer {a[0]}, "
+            f"start {a[1]}, mid {a[2]}, end {a[3]}, width {a[5]} mm"
+        )
+    for a in old_a - new_a:
+        result.arc_changes.append(
+            f"Arc removed: net {a[4]}, layer {a[0]}, "
+            f"start {a[1]}, mid {a[2]}, end {a[3]}, width {a[5]} mm"
+        )
+
+
+def zone_diff(old_pcb, new_pcb, result):
+    """
+    Diff copper zone / pour definitions.
+
+    Primary key: (layer, net, uuid) — detects added/removed zones.
+    Secondary check: for zones that share the same (layer, net, uuid), compare
+    the rounded outline polygon to detect boundary edits.
+    """
+    def zone_id(z):
+        return (z.layer, z.net, z.uuid)
+
+    def zone_pts_key(z):
+        pts = tuple(
+            (round(x, TRACE_ROUND), round(y, TRACE_ROUND))
+            for x, y in z.outline_pts
+        )
+        return pts
+
+    old_map = {zone_id(z): z for z in old_pcb.zones}
+    new_map = {zone_id(z): z for z in new_pcb.zones}
+
+    for key in sorted(new_map.keys() - old_map.keys()):
+        z = new_map[key]
+        result.zone_changes.append(
+            f"Zone added: net {z.net}, layer {z.layer}"
+            + (f" [{z.uuid[:8]}]" if z.uuid else "")
+        )
+
+    for key in sorted(old_map.keys() - new_map.keys()):
+        z = old_map[key]
+        result.zone_changes.append(
+            f"Zone removed: net {z.net}, layer {z.layer}"
+            + (f" [{z.uuid[:8]}]" if z.uuid else "")
+        )
+
+    for key in sorted(old_map.keys() & new_map.keys()):
+        oz, nz = old_map[key], new_map[key]
+        if zone_pts_key(oz) != zone_pts_key(nz):
+            result.zone_changes.append(
+                f"Zone boundary changed: net {nz.net}, layer {nz.layer}"
+                + (f" [{nz.uuid[:8]}]" if nz.uuid else "")
+            )

@@ -10,7 +10,23 @@ import re
 from fluxdiff.visual.constants import PIXELS_PER_MM
 
 
-def generate_component_visual_diff(before_png, after_png, before_components, after_components, output_path):
+def generate_component_visual_diff(before_png, after_png, before_components, after_components, output_path,
+                                   board_bounds=None):
+    """
+    Generate a component-level visual diff overlay.
+
+    board_bounds — dict with keys offset_x, offset_y (in KiCad absolute mm)
+    from DiffResult.board_bounds.  When provided, KiCad mm coordinates are
+    converted to SVG-space pixels by subtracting the board origin first:
+
+        svg_x = kicad_x - offset_x
+        svg_y = kicad_y - offset_y
+        pixel_x = svg_x * PIXELS_PER_MM
+
+    Without this correction, markers appear at absolute KiCad coordinates
+    (e.g. x ≈ 120 mm) instead of board-relative coordinates (e.g. x ≈ 26 mm),
+    placing them completely off the rendered PNG.
+    """
     before_img = cv2.imread(before_png)
     after_img = cv2.imread(after_png)
 
@@ -55,8 +71,15 @@ def generate_component_visual_diff(before_png, after_png, before_components, aft
     thickness = max(1, int(w / 2000))
 
     def get_px(comp):
-        # F4 FIX: PIXELS_PER_MM is now imported from constants, not hardcoded
-        return int(round(comp.x * PIXELS_PER_MM)), int(round(comp.y * PIXELS_PER_MM))
+        # Subtract the board outline origin so coordinates are board-relative,
+        # then multiply by PIXELS_PER_MM to get pixel coords in the PNG.
+        # board_bounds contains offset_x/offset_y = Edge.Cuts min_x/min_y.
+        offset_x = board_bounds.get("offset_x", 0.0) if board_bounds else 0.0
+        offset_y = board_bounds.get("offset_y", 0.0) if board_bounds else 0.0
+        return (
+            int(round((comp.x - offset_x) * PIXELS_PER_MM)),
+            int(round((comp.y - offset_y) * PIXELS_PER_MM)),
+        )
 
     def draw_marker(px, py, label, color):
         cv2.drawMarker(canvas, (px, py), color, markerType=cv2.MARKER_CROSS, markerSize=16, thickness=2)

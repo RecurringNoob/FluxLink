@@ -16,12 +16,20 @@ Running in-process (rather than shelling out to the CLI) means:
 """
 
 import os
+import re
 import tempfile
 import subprocess
-from typing import Optional
+from typing import List, Optional
 
 from fluxdiff.rag.config import RAG_CONFIG
 from fluxdiff.rag.schemas import DiffSummary
+
+# Matches "EXISTING: ..." and "ERC EXISTING: ..." / "BOM EXISTING: ..." lines.
+_EXISTING = re.compile(r"^(?:[A-Z]+ )?EXISTING:")
+
+
+def _drop_existing(lines: List[str]) -> List[str]:
+    return [l for l in lines if not _EXISTING.match(l)]
 
 
 class DiffGenerator:
@@ -85,15 +93,20 @@ class DiffGenerator:
             print(f"[DiffGenerator] FluxDiff pipeline error: {e}")
             return DiffSummary()
 
+        # EXISTING findings were already present before this commit, so they
+        # are not part of what the commit changed.  Indexing them made every
+        # commit (even a docs-only one) look like it touched impedance, BOM,
+        # grounding, etc.
+        keep = _drop_existing
         return DiffSummary(
             component_changes=diff.component_changes,
-            net_changes=diff.net_changes,
+            net_changes=keep(diff.net_changes),
             routing_changes=diff.routing_changes,
-            power_tree=diff.power_tree_changes,
-            diff_pairs=diff.diff_pair_changes,
-            grounding=diff.ground_changes,
-            impedance=diff.impedance_changes,
-            bom=diff.bom_changes,
+            power_tree=keep(diff.power_tree_changes),
+            diff_pairs=keep(diff.diff_pair_changes),
+            grounding=keep(diff.ground_changes),
+            impedance=keep(diff.impedance_changes),
+            bom=keep(diff.bom_changes),
             summary=diff.summary,
         )
 

@@ -8,6 +8,9 @@ export type Category =
   | "BOM"
   | "COMPONENT";
 
+// Status relative to the old board. "" only for findings produced outside a diff.
+export type FindingStatus = "NEW" | "EXISTING" | "FIXED";
+
 export interface Coordinates {
   x: number;
   y: number;
@@ -21,6 +24,7 @@ export interface Finding {
   affected_nets: string[];
   coordinates: Coordinates | null;
   highlight_refs: string[];
+  status: FindingStatus;
   label: string;
 }
 

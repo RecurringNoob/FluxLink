@@ -46,6 +46,37 @@ class Trace:
 
 
 @dataclass
+class Arc:
+    """
+    A copper arc routing segment (gr_arc on a copper layer, or fp_arc).
+
+    start / mid / end are three points on the arc (KiCad uses three-point arcs).
+    width is in mm; net is the net name string.
+    """
+    layer: str
+    start: Tuple[float, float]
+    mid: Tuple[float, float]
+    end: Tuple[float, float]
+    net: str
+    width: float = 0.0
+
+
+@dataclass
+class Zone:
+    """
+    A copper pour / zone fill.
+
+    outline_pts is the list of (x, y) vertices of the zone boundary polygon
+    in KiCad absolute mm coordinates.
+    uuid uniquely identifies the zone so the diff engine can track renames.
+    """
+    layer: str
+    net: str
+    outline_pts: List[Tuple[float, float]] = field(default_factory=list)
+    uuid: str = ""
+
+
+@dataclass
 class Via:
     x: float
     y: float
@@ -58,6 +89,12 @@ class PCBData:
     nets: List[Net] = field(default_factory=list)
     traces: List[Trace] = field(default_factory=list)
     vias: List[Via] = field(default_factory=list)
+    arcs: List[Arc] = field(default_factory=list)
+    zones: List[Zone] = field(default_factory=list)
+    # Edge.Cuts bounding box in KiCad absolute mm coordinates.
+    # Populated by extract_board_outline(); used by the diff engine to convert
+    # KiCad mm → SVG/pixel space correctly (SVG origin = board_outline top-left).
+    board_outline: Optional[Tuple[float, float, float, float]] = None  # (min_x, min_y, max_x, max_y)
 
 
 # ---------------------------------------------------------------------------
@@ -92,6 +129,11 @@ class Finding:
     affected_nets: Tuple[str, ...] = ()
     coordinates: Optional[Tuple[float, float]] = None
     highlight_refs: Tuple[str, ...] = ()
+    # Diff status relative to the old board: "NEW", "EXISTING" or "FIXED"
+    # (empty for findings produced outside a diff).  compare=False keeps it out
+    # of __eq__/__hash__, so the old/new set arithmetic in diff_engine._tag
+    # still treats "the same finding" as equal regardless of status.
+    status: str = field(default="", compare=False)
 
     def __str__(self) -> str:
         """Backward-compatible string representation matches the old list[str] format."""
@@ -108,6 +150,7 @@ class Finding:
             "coordinates": {"x": self.coordinates[0], "y": self.coordinates[1]}
                            if self.coordinates else None,
             "highlight_refs": list(self.highlight_refs),
+            "status": self.status,
             # Full label kept for sidebar display — matches old _tag() output
             "label": self.message,
         }
@@ -133,9 +176,16 @@ class DiffResult:
     bom_findings: List[Finding] = field(default_factory=list)
     erc_findings: List[Finding] = field(default_factory=list)
     component_findings: List[Finding] = field(default_factory=list)
+    # Arc routing changes (gr_arc on copper layers)
+    arc_changes: List[str] = field(default_factory=list)
+    # Zone / copper-pour changes
+    zone_changes: List[str] = field(default_factory=list)
     summary: str = ""
     graph_old: Dict[str, Set] = field(default_factory=dict)
     graph_new: Dict[str, Set] = field(default_factory=dict)
-    # Board spatial bounds in mm — populated by diff_engine from parsed geometry.
-    # Used by the React viewer to map KiCad mm coordinates → overlay pixels.
-    board_bounds: Optional[dict] = None  # {"min_x","min_y","max_x","max_y"}
+    # Board spatial bounds in mm — populated by diff_engine from Edge.Cuts geometry.
+    # Used by the React viewer to map KiCad mm coordinates -> overlay pixels.
+    # Format: {"min_x", "min_y", "max_x", "max_y", "offset_x", "offset_y"}
+    # offset_x/offset_y equal min_x/min_y and are provided explicitly so the
+    # viewer can compute:  svg_x = kicad_x - offset_x  without recomputing.
+    board_bounds: Optional[dict] = None

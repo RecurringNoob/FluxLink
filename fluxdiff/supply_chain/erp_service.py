@@ -10,17 +10,20 @@ Contract
 fetch_inventory_from_erp(component_value: str) -> dict
     Always returns {"value": str, "stock": int}.
     Raises on unrecoverable network/auth errors so callers can surface them.
+
+The default implementation is a DETERMINISTIC stub: the same part value always
+returns the same stock, so repeated runs and old-vs-new board comparisons do
+not produce phantom NEW / FIXED BOM findings.
 """
 
-import random
-import time
+import zlib
+
+_STOCK_LEVELS = (0, 1, 2, 5, 10, 50)
 
 
 def fetch_inventory_from_erp(component_value: str) -> dict:
     """
-    Simulates an ERP API call to fetch stock availability.
-
-    Replace this stub with your real ERP integration:
+    Stub ERP lookup.  Replace with your real integration, for example:
 
         import requests
         resp = requests.get(
@@ -33,6 +36,5 @@ def fetch_inventory_from_erp(component_value: str) -> dict:
         data = resp.json()
         return {"value": component_value, "stock": int(data["qty_on_hand"])}
     """
-    time.sleep(0.1)  # simulate network latency
-    stock = random.choice([0, 1, 2, 5, 10, 50])
-    return {"value": component_value, "stock": stock}
+    index = zlib.crc32(component_value.encode("utf-8")) % len(_STOCK_LEVELS)
+    return {"value": component_value, "stock": _STOCK_LEVELS[index]}

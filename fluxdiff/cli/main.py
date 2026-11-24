@@ -3,7 +3,7 @@ import click
 
 from fluxdiff.parser.pcb_parser import parse_pcb
 from fluxdiff.diff.diff_engine import compare_pcbs
-from fluxdiff.visual.kicad_export import export_pcb_svg, export_pcb_png
+from fluxdiff.visual.kicad_export import export_pcb_svg, export_pcb_png, DEFAULT_LAYERS
 from fluxdiff.visual.image_diff import generate_visual_diff
 from fluxdiff.visual.component_diff import generate_component_visual_diff
 from fluxdiff.analysis.power_tree import analyse_power_tree, format_power_tree_report
@@ -20,7 +20,13 @@ from fluxdiff.analysis.power_tree import analyse_power_tree, format_power_tree_r
     type=click.Path(),
     help="Path to YAML/JSON stack-up config for impedance analysis (optional)",
 )
-def main(before_file, after_file, viewer, stackup):
+@click.option(
+    "--layers",
+    default=DEFAULT_LAYERS,
+    show_default=True,
+    help="Comma-separated KiCad layer names for SVG/PNG export",
+)
+def main(before_file, after_file, viewer, stackup, layers):
     """
     Compare two KiCad PCB files and generate a semantic + visual diff.
 
@@ -78,15 +84,15 @@ def main(before_file, after_file, viewer, stackup):
     pngs_ok = False
 
     try:
-        export_pcb_svg(before_file, before_svg)
-        export_pcb_svg(after_file,  after_svg)
+        export_pcb_svg(before_file, before_svg, layers=layers)
+        export_pcb_svg(after_file,  after_svg,  layers=layers)
         svgs_ok = True
     except Exception as e:
         print(f"\n[WARNING] PCB SVG export failed: {e}")
 
     try:
-        export_pcb_png(before_file, before_png)
-        export_pcb_png(after_file,  after_png)
+        export_pcb_png(before_file, before_png, layers=layers)
+        export_pcb_png(after_file,  after_png,  layers=layers)
         pngs_ok = True
     except Exception as e:
         print(f"\n[WARNING] PCB PNG export failed: {e}")
@@ -106,6 +112,7 @@ def main(before_file, after_file, viewer, stackup):
                     before_png, after_png,
                     before_pcb.components, after_pcb.components,
                     component_diff_png,
+                    board_bounds=diff_report.board_bounds,
                 )
                 print(f"Component diff generated: {component_diff_png}")
             except Exception as e:
@@ -155,6 +162,12 @@ def _print_report(diff_report, power_tree_report):
         print(line)
     for line in _section("ROUTING CHANGES", diff_report.routing_changes):
         print(line)
+    for line in _section("ARC CHANGES", diff_report.arc_changes,
+                          "  No arc changes."):
+        print(line)
+    for line in _section("ZONE CHANGES", diff_report.zone_changes,
+                          "  No zone changes."):
+        print(line)
     for line in _section("POWER TREE", diff_report.power_tree_changes,
                           "  No new power tree issues."):
         print(line)
@@ -183,6 +196,8 @@ def _write_report(path, diff_report, power_tree_report):
             ("COMPONENT CHANGES", diff_report.component_changes, "  No changes."),
             ("NET CHANGES",       diff_report.net_changes,       "  No changes."),
             ("ROUTING CHANGES",   diff_report.routing_changes,   "  No changes."),
+            ("ARC CHANGES",       diff_report.arc_changes,       "  No arc changes."),
+            ("ZONE CHANGES",      diff_report.zone_changes,      "  No zone changes."),
         ]
         for title, items, empty in sections:
             f.write(f"=== {title} ({len(items)}) ===\n")

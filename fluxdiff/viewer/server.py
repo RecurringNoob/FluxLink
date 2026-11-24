@@ -52,6 +52,8 @@ def get_diff():
         "components":        diff_result.component_changes,
         "nets":              diff_result.net_changes,
         "routing":           diff_result.routing_changes,
+        "arcs":              diff_result.arc_changes,
+        "zones":             diff_result.zone_changes,
         "power_tree":        diff_result.power_tree_changes,
         "power_tree_report": app.config.get("POWER_TREE_REPORT", ""),
         "diff_pairs":        diff_result.diff_pair_changes,
@@ -109,16 +111,20 @@ def board_diff_overlay():
 @app.route("/api/board/bounds")
 def board_bounds():
     """
-    Serve the board bounding box in mm and the pixel-per-mm constants.
+    Serve the board bounding box in mm and coordinate offset for the viewer.
 
-    The React viewer uses this to map KiCad mm coordinates to overlay pixels:
-      pixel_x = (kicad_x - min_x) * px_per_mm
-      pixel_y = (kicad_y - min_y) * px_per_mm
+    The React viewer uses board_bounds to map KiCad mm coordinates to the
+    SVG coordinate space:
 
-    px_per_mm here refers to the SVG's internal coordinate space, not screen
-    pixels — the SVG scales with the zoom container so the overlay div must
-    scale identically.  The viewer reads the SVG's viewBox at runtime and
-    derives the final scale factor from (viewBox_width / board_width_mm).
+        svg_x = kicad_x - offset_x
+        svg_y = kicad_y - offset_y
+
+    offset_x/offset_y equal min_x/min_y when the bounds are derived from
+    Edge.Cuts (the accurate path).  They are provided as separate keys so
+    the viewer does not need to know whether the bounds have a margin.
+
+    The SVG internal unit is mm, so the viewer multiplies svg_x by
+    (svg_element_width_px / board_width_mm) to get pixel coordinates.
     """
     diff_result = app.config.get("DIFF_RESULT")
     bounds = diff_result.board_bounds if diff_result else None

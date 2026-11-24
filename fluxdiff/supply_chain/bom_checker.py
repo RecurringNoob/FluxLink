@@ -56,9 +56,11 @@ def analyse_supply_chain(pcb: "PCBData") -> List[Finding]:
             )
         else:
             severity = "INFO"
+            # Stock level is deliberately left out: a changing quantity would
+            # make an unchanged part look like a NEW/FIXED finding.
             message  = (
                 f"In stock: {item['display_name']} "
-                f"(need {required}, have {stock}) — refs: {refs_str}"
+                f"(need {required}) — refs: {refs_str}"
             )
 
         dedup_key = f"{severity}:{message}"

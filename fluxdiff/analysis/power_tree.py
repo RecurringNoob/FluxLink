@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Set, Optional
 from math import hypot
 from fluxdiff.models.pcb_models import Finding
+from fluxdiff.analysis.net_names import is_voltage_rail_name
 
 REGULATOR_PREFIXES = ("U", "VR", "IC", "REG", "LDO")
 REGULATOR_VALUE_SUBSTRINGS = (
@@ -57,7 +58,8 @@ def _is_ic_load(comp):
     return any(comp.ref.upper().startswith(p) for p in ("U", "IC", "AR"))
 
 def _net_is_power(net_name):
-    return any(sub in net_name.upper() for sub in POWER_NET_SUBSTRINGS)
+    return (any(sub in net_name.upper() for sub in POWER_NET_SUBSTRINGS)
+            or is_voltage_rail_name(net_name))
 
 def _net_is_gnd(net_name):
     return any(sub in net_name.upper() for sub in GND_NET_SUBSTRINGS)
