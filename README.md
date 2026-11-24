@@ -399,6 +399,11 @@ FLUXDIFF_LLM_MODEL=llama3.1
 FLUXDIFF_EMBEDDING_MODEL=nomic-embed-text
 ```
 
+**Busy models.** When a provider answers "busy" or "rate limited" (HTTP 503/429),
+the chat retries once after a short pause, then tries the fallback models
+(`FLUXDIFF_LLM_FALLBACK_MODELS`; for Gemini, `gemini-3.5-flash-lite` by default).
+Other errors are reported immediately as one readable line.
+
 **Changing the embedding model** puts existing indexes in a different vector
 space. Each index records the model that built it: the chat asks you to re-index
 (↻) such repositories, and re-indexing rebuilds them automatically.
@@ -418,6 +423,7 @@ space. Each index records the model that built it: the chat asks you to re-index
 | `FLUXDIFF_EMBEDDING_PROVIDER` | same as LLM provider | `openai` or `gemini` |
 | `FLUXDIFF_LLM_MODEL` | `gpt-4o-mini` / `gemini-3.8-flash` | Chat completion model |
 | `FLUXDIFF_EMBEDDING_MODEL` | `text-embedding-3-small` / `gemini-embedding-2` | Embedding model |
+| `FLUXDIFF_LLM_FALLBACK_MODELS` | — / `gemini-3.5-flash-lite` | Comma-separated models tried when the main one is busy (503/429); empty disables |
 | `OPENAI_BASE_URL` | OpenAI | OpenAI-compatible server (Ollama, Groq, OpenRouter, ...) |
 | `FLUXDIFF_TOP_K` | `5` | Documents retrieved per query |
 | `FLUXDIFF_MEMORY_WINDOW` | `5` | Conversation turns kept in context |

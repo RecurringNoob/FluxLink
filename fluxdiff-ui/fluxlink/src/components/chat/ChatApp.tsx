@@ -355,10 +355,15 @@ export function ChatApp(): JSX.Element {
       } else {
         console.error("Error fetching chat response:", error);
         const reason = error instanceof Error ? error.message : String(error);
+        // fetch() throws a TypeError only when the server could not be reached;
+        // otherwise the server answered with an error and `reason` is its message.
+        const unreachable = error instanceof TypeError;
         const errorMessage: Message = {
           id: Date.now() + 1,
           role: "assistant",
-          content: `Sorry, the request failed (${reason}). Check that the chat API is running on ${API_URL} and try again.`,
+          content: unreachable
+            ? `Sorry, I couldn't reach the chat API (${API_URL}). Check that it is running and try again.`
+            : `Sorry, that didn't work: ${reason}`,
           isNew: true,
         };
         setMessages((prev) => [...prev, errorMessage]);

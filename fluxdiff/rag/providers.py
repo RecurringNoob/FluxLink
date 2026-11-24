@@ -97,3 +97,76 @@ def describe() -> dict:
     """Provider/model summary for /health and the UI."""
     lp, ep = llm_provider(), embedding_provider()
     return {"llm": f"{lp}:{llm_model(lp)}", "embedding": f"{ep}:{embedding_model(ep)}"}
+
+
+# ---------------------------------------------------------------------------
+# Transient provider errors: retry, then fall back to another model
+# ---------------------------------------------------------------------------
+
+import re as _re
+import time as _time
+
+# Busy / rate-limited / temporarily unreachable.  Not retried: bad requests,
+# authentication errors, unknown models, safety blocks.
+_TRANSIENT_STATUS = {408, 429, 500, 502, 503, 504, 529}
+_TRANSIENT_TEXT = _re.compile(
+    r"\b(?:408|429|500|502|503|504|529)\b|UNAVAILABLE|RESOURCE_EXHAUSTED|DEADLINE_EXCEEDED|"
+    r"overloaded|high demand|rate limit|temporarily|timed? ?out|connection (?:error|reset|aborted)",
+    _re.IGNORECASE)
+_TRANSIENT_TYPES = ("RateLimitError", "APIConnectionError", "APITimeoutError",
+                    "InternalServerError", "ServiceUnavailableError", "ServerError",
+                    "ConnectionError", "TimeoutError")
+
+
+def is_transient(error: BaseException) -> bool:
+    for attr in ("status_code", "code", "status"):
+        value = getattr(error, attr, None)
+        if isinstance(value, int) and value in _TRANSIENT_STATUS:
+            return True
+    if type(error).__name__ in _TRANSIENT_TYPES:
+        return True
+    return bool(_TRANSIENT_TEXT.search(str(error)))
+
+
+def short_error(error: BaseException) -> str:
+    """One readable line instead of a provider's full JSON error payload."""
+    text = str(error)
+    m = _re.search(r"'message':\s*'([^']+)'", text) or _re.search(r'"message":\s*"([^"]+)"', text)
+    head = _re.match(r"\s*(\d{3}\s+[A-Z_]+)", text)
+    if m:
+        return (f"{head.group(1)}: " if head else "") + m.group(1)
+    return text.splitlines()[0][:200] if text else type(error).__name__
+
+
+# Waits between attempts on the same model (seconds); kept short so a busy
+# provider costs a demo a few seconds, not a minute.
+RETRY_DELAYS = (1.5,)
+
+DEFAULT_LLM_FALLBACKS = {
+    "openai": [],
+    "gemini": ["gemini-3.5-flash-lite"],
+}
+
+
+def llm_fallback_models(provider: str, primary: str):
+    """FLUXDIFF_LLM_FALLBACK_MODELS (comma-separated; empty disables)."""
+    raw = os.getenv("FLUXDIFF_LLM_FALLBACK_MODELS")
+    models = ([m.strip() for m in raw.split(",") if m.strip()] if raw is not None
+              else DEFAULT_LLM_FALLBACKS.get(provider, []))
+    return [m for m in models if m != primary]
+
+
+_sleep = _time.sleep          # tests replace this to skip the waits
+
+
+def call_with_retries(fn, delays=None, sleep=None):
+    """Call fn(); on a transient error wait and retry per `delays`."""
+    delays = RETRY_DELAYS if delays is None else delays
+    sleep = sleep or (lambda s: _sleep(s))
+    for delay in list(delays) + [None]:
+        try:
+            return fn()
+        except Exception as e:
+            if delay is None or not is_transient(e):
+                raise
+            sleep(delay)

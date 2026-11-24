@@ -36,6 +36,7 @@ load_dotenv()
 
 from fluxdiff.rag import providers
 from fluxdiff.rag.chat.chat_engine import ChatEngine
+from fluxdiff.rag.embedding.embedder import EmbeddingError
 from fluxdiff.rag.embedding.vector_store import EmbeddingMismatch
 from fluxdiff.rag.llm.llm_client import LLMError
 from fluxdiff.rag.repos import (DEFAULT_REPO_ID, RepoBusy, RepoError, RepoManager,
@@ -146,7 +147,10 @@ def _respond(rag_query: RAGQuery, session_id: Optional[str], repo_id: Optional[s
         response = get_chat_engine().ask_with_filters(rag_query, session_id=session_id,
                                                       repo_id=repo_id)
     except LLMError as e:
-        raise HTTPException(status_code=502, detail=f"LLM request failed: {e}")
+        raise HTTPException(status_code=502, detail=str(e))
+    except EmbeddingError as e:
+        raise HTTPException(status_code=502,
+                            detail=f"Search is unavailable right now ({e}). Please try again in a moment.")
     except EmbeddingMismatch as e:
         raise HTTPException(status_code=409, detail=str(e))
     return {

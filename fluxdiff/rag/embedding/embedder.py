@@ -12,11 +12,15 @@ from typing import List, Optional
 
 from dotenv import load_dotenv
 
-from fluxdiff.rag.providers import (embedding_model, embedding_provider, gemini_api_key,
-                                    require_key)
+from fluxdiff.rag.providers import (call_with_retries, embedding_model, embedding_provider,
+                                    gemini_api_key, require_key, short_error)
 from fluxdiff.rag.schemas import RAGDocument
 
 load_dotenv()
+
+class EmbeddingError(RuntimeError):
+    """The embedding request failed (after retries); the API maps it to HTTP 502."""
+
 
 # Request sizes stay well inside every provider's limits.  Per-input limits
 # are handled by chunking documents to Embedder.max_input_chars.
@@ -122,11 +126,18 @@ class Embedder:
     def max_input_chars(self) -> int:
         return self._backend.max_input_chars
 
+    def _embed(self, texts: List[str], is_query: bool, delays) -> List[List[float]]:
+        try:
+            return call_with_retries(lambda: self._backend.embed(texts, is_query), delays=delays)
+        except Exception as e:
+            raise EmbeddingError(f"{self.signature}: {short_error(e)}") from e
+
     def embed_documents(self, documents: List[RAGDocument]) -> List[List[float]]:
+        # Indexing is not interactive: wait longer for a busy provider.
         vectors: List[List[float]] = []
         for batch in _batches([doc.content for doc in documents]):
-            vectors.extend(self._backend.embed(batch, is_query=False))
+            vectors.extend(self._embed(batch, is_query=False, delays=(2, 5, 10)))
         return vectors
 
     def embed_query(self, query: str) -> List[float]:
-        return self._backend.embed([query], is_query=True)[0]
+        return self._embed([query], is_query=True, delays=(1.5,))[0]

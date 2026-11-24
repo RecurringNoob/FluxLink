@@ -185,7 +185,7 @@ def test_gemini_llm_sends_system_instruction():
     assert not hasattr(config, "temperature")
 
 
-def test_gemini_llm_errors_become_llm_errors():
+def test_gemini_llm_errors_become_llm_errors(sleeps):
     empty = LLMClient(client=gemini_client(reply=None), provider="gemini", gemini_types=GEMINI_TYPES)
     with pytest.raises(LLMError, match="SAFETY"):
         empty.generate_response("q")
@@ -253,3 +253,121 @@ def test_chunk_size_follows_the_embedding_model(board_repo, tmp_path):
     run_ingestion(repo_path=str(board_repo), embedder=gemini_embedder("gemini-embedding-001"),
                   store=store)
     assert max(len(d.content) for d in store.documents) <= 5_000
+
+
+# --------------------------------------------------------------------------
+# Busy models: retry, then fall back
+# --------------------------------------------------------------------------
+
+# The error Gemini returned in the hosted demo (Nov 2026).
+GEMINI_503 = ("503 UNAVAILABLE. {'error': {'code': 503, 'message': 'This model is currently "
+              "experiencing high demand. Spikes in demand are usually temporary. Please try again "
+              "later.', 'status': 'UNAVAILABLE'}}")
+
+
+class ServerError(Exception):
+    pass
+
+
+@pytest.fixture
+def sleeps(monkeypatch):
+    waited = []
+    monkeypatch.setattr(providers, "_sleep", waited.append)
+    return waited
+
+
+class FlakyModels(FakeGeminiModels):
+    """generate_content fails per model according to a script of outcomes."""
+
+    def __init__(self, script):
+        super().__init__()
+        self.script = {m: list(outcomes) for m, outcomes in script.items()}
+
+    def generate_content(self, model, contents, config=None):
+        self.generate_calls.append((model, contents, config))
+        outcome = self.script[model].pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return types.SimpleNamespace(text=outcome, candidates=[])
+
+
+def flaky_llm(script):
+    client = types.SimpleNamespace(models=FlakyModels(script))
+    return LLMClient(client=client, provider="gemini", model="gemini-3.8-flash",
+                     gemini_types=GEMINI_TYPES), client.models
+
+
+def test_busy_model_falls_back(sleeps):
+    llm, models = flaky_llm({"gemini-3.8-flash": [ServerError(GEMINI_503)] * 2,
+                             "gemini-3.5-flash-lite": ["answer from lite"]})
+    assert llm.generate_response("q") == "answer from lite"
+    assert llm.last_model == "gemini-3.5-flash-lite"
+    assert [c[0] for c in models.generate_calls] == ["gemini-3.8-flash"] * 2 + ["gemini-3.5-flash-lite"]
+    assert sleeps == [1.5]
+
+
+def test_brief_spike_is_retried_on_the_same_model(sleeps):
+    llm, models = flaky_llm({"gemini-3.8-flash": [ServerError(GEMINI_503), "second try"]})
+    assert llm.generate_response("q") == "second try" and llm.last_model == "gemini-3.8-flash"
+
+
+def test_all_models_busy_gives_a_readable_error(sleeps):
+    llm, _ = flaky_llm({"gemini-3.8-flash": [ServerError(GEMINI_503)] * 2,
+                        "gemini-3.5-flash-lite": [ServerError("429 RESOURCE_EXHAUSTED quota")] * 2})
+    with pytest.raises(LLMError) as err:
+        llm.generate_response("q")
+    message = str(err.value)
+    assert message.startswith("The model is busy right now")
+    assert "503 UNAVAILABLE: This model is currently experiencing high demand" in message
+    assert "{'error'" not in message and "try again" in message
+
+
+def test_permanent_errors_are_not_retried(sleeps):
+    llm, models = flaky_llm({"gemini-3.8-flash": [ValueError("400 INVALID_ARGUMENT: bad model")]})
+    with pytest.raises(LLMError, match="INVALID_ARGUMENT"):
+        llm.generate_response("q")
+    assert len(models.generate_calls) == 1 and sleeps == []
+
+
+def test_fallbacks_are_configurable(monkeypatch):
+    monkeypatch.setenv("FLUXDIFF_LLM_FALLBACK_MODELS", "a, b ,gemini-3.8-flash")
+    assert providers.llm_fallback_models("gemini", "gemini-3.8-flash") == ["a", "b"]
+    monkeypatch.setenv("FLUXDIFF_LLM_FALLBACK_MODELS", "")
+    assert providers.llm_fallback_models("gemini", "gemini-3.8-flash") == []
+    monkeypatch.delenv("FLUXDIFF_LLM_FALLBACK_MODELS")
+    assert providers.llm_fallback_models("openai", "gpt-4o-mini") == []
+
+
+def test_query_embedding_is_retried_then_reported(sleeps):
+    from fluxdiff.rag.embedding.embedder import EmbeddingError
+    calls = []
+
+    class Busy(FakeGeminiModels):
+        def embed_content(self, model, contents, config=None):
+            calls.append(model)
+            if len(calls) == 1:
+                raise ServerError(GEMINI_503)
+            return super().embed_content(model, contents, config)
+
+    emb = gemini_embedder(client=types.SimpleNamespace(models=Busy()))
+    assert len(emb.embed_query("q")) == 12 and sleeps == [1.5]
+
+    class Down(FakeGeminiModels):
+        def embed_content(self, model, contents, config=None):
+            raise ServerError(GEMINI_503)
+
+    down = gemini_embedder(client=types.SimpleNamespace(models=Down()))
+    with pytest.raises(EmbeddingError, match="high demand"):
+        down.embed_query("q")
+
+
+@pytest.mark.parametrize("error,transient", [
+    (ServerError(GEMINI_503), True),
+    (Exception("429 RESOURCE_EXHAUSTED"), True),
+    (type("RateLimitError", (Exception,), {})("slow down"), True),
+    (type("E", (Exception,), {"status_code": 503})("x"), True),
+    (ValueError("400 INVALID_ARGUMENT"), False),
+    (PermissionError("401 API key not valid"), False),
+])
+def test_transient_detection(error, transient):
+    assert providers.is_transient(error) is transient
