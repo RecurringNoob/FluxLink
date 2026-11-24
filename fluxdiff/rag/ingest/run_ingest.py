@@ -47,21 +47,21 @@ MAX_REPO_FILE_BYTES = 256 * 1024
 
 
 def collect_board_documents(loader: GitLoader, diff_gen: DiffGenerator,
-                            builder: DocumentBuilder, max_commits: int):
+                            builder: DocumentBuilder, max_commits: int, log=print):
     commits = loader.get_commits(max_count=max_commits, pcb_only=True)
     if not commits:
-        print("No commits touching .kicad_pcb files — no board history to ingest.")
+        log("No commits touching .kicad_pcb files — no board history to ingest.")
         return []
 
-    print(f"Processing {len(commits)} commit(s) that changed a board file...")
+    log(f"Processing {len(commits)} commit(s) that changed a board file...")
     docs = []
     for i, commit in enumerate(commits, start=1):
         parent = loader.get_first_parent(commit.commit_hash)
         if parent is None:
-            print(f"  [{i}/{len(commits)}] {commit.commit_hash[:7]} is a root commit — skipped")
+            log(f"  [{i}/{len(commits)}] {commit.commit_hash[:7]} is a root commit — skipped")
             continue
         changed = loader.get_changed_pcb_files(parent, commit.commit_hash)
-        print(f"  [{i}/{len(commits)}] {parent[:7]} → {commit.commit_hash[:7]} "
+        log(f"  [{i}/{len(commits)}] {parent[:7]} → {commit.commit_hash[:7]} "
               f"({commit.message[:60]}) — {len(changed)} board file(s)")
         for pcb_file in changed:
             diff = diff_gen.generate_diff(parent, commit.commit_hash, pcb_file)
@@ -69,7 +69,7 @@ def collect_board_documents(loader: GitLoader, diff_gen: DiffGenerator,
     return docs
 
 
-def collect_repo_file_documents(repo_path: str):
+def collect_repo_file_documents(repo_path: str, log=print):
     """Index the repository's text files so the chat can answer about them.
 
     Note: these files are sent to the embedding API.  Keep secrets out of
@@ -84,12 +84,12 @@ def collect_repo_file_documents(repo_path: str):
             full_path = os.path.join(root, file)
             try:
                 if os.path.getsize(full_path) > MAX_REPO_FILE_BYTES:
-                    print(f"    Skipping large file {os.path.relpath(full_path, repo_path)}")
+                    log(f"    Skipping large file {os.path.relpath(full_path, repo_path)}")
                     continue
                 with open(full_path, "r", encoding="utf-8", errors="ignore") as f:
                     content = f.read()
             except OSError as e:
-                print(f"    Warning: could not read {full_path}: {e}")
+                log(f"    Warning: could not read {full_path}: {e}")
                 continue
             if not content.strip():
                 continue
@@ -112,6 +112,7 @@ def run_ingestion(
     github: str = None,
     github_ref: str = None,
     github_source=None,
+    log=print,
 ):
     """
     Ingest board history from a local clone (repo_path / FLUXDIFF_REPO_PATH)
@@ -122,15 +123,15 @@ def run_ingestion(
     if github or github_source:
         from fluxdiff.rag.ingest.github_source import GitHubSource
         source = github_source or GitHubSource(github, ref=github_ref)
-        print(f"Starting ingestion for {source.label} (no local clone)")
+        log(f"Starting ingestion for {source.label} (no local clone)")
         loader   = source
         diff_gen = DiffGenerator(stackup_config=stackup_config, file_reader=source.read_file)
         if include_repo_files:
-            print("Note: repository text files are not indexed in GitHub mode.")
+            log("Note: repository text files are not indexed in GitHub mode.")
             include_repo_files = False
     else:
         repo_path = repo_path or RAG_CONFIG["repo_path"]
-        print(f"Starting ingestion for repo: {repo_path}")
+        log(f"Starting ingestion for repo: {repo_path}")
         loader   = GitLoader(repo_path)
         diff_gen = DiffGenerator(repo_path, stackup_config=stackup_config)
 
@@ -146,10 +147,10 @@ def run_ingestion(
 
     builder  = DocumentBuilder()
 
-    all_docs = collect_board_documents(loader, diff_gen, builder, max_commits)
+    all_docs = collect_board_documents(loader, diff_gen, builder, max_commits, log=log)
     if include_repo_files:
-        print("Indexing repo text files...")
-        all_docs.extend(collect_repo_file_documents(repo_path))
+        log("Indexing repo text files...")
+        all_docs.extend(collect_repo_file_documents(repo_path, log=log))
 
     all_docs = chunk_documents(all_docs)
     # Embed only what the store does not already hold, so re-running
@@ -161,17 +162,17 @@ def run_ingestion(
         unique.setdefault(store.content_hash(d), d)
     new_docs = list(unique.values())
 
-    print(f"{len(all_docs)} document(s) built, {len(new_docs)} new.")
+    log(f"{len(all_docs)} document(s) built, {len(new_docs)} new.")
     if not new_docs:
-        print("Nothing new to embed.")
+        log("Nothing new to embed.")
         return 0
 
-    print(f"Embedding {len(new_docs)} document(s)...")
+    log(f"Embedding {len(new_docs)} document(s)...")
     embeddings = embedder.embed_documents(new_docs)
 
-    print("Storing in vector DB...")
+    log("Storing in vector DB...")
     store.add_documents(new_docs, embeddings)
-    print("Ingestion complete.")
+    log("Ingestion complete.")
     return len(new_docs)
 
 

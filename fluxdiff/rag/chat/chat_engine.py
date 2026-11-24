@@ -39,9 +39,17 @@ class ChatEngine:
     (one is created when absent) and get it back in the response.
     """
 
-    def __init__(self, retriever: Retriever = None, llm: LLMClient = None):
+    def __init__(self, retriever: Retriever = None, llm: LLMClient = None,
+                 store_for=None):
+        """
+        store_for(repo_id) -> VectorStore selects a repository's index
+        (see rag/repos.py).  Without a repo_id, or without store_for, the
+        default index behind `retriever` is used.
+        """
         self.retriever = retriever or Retriever()
         self.llm       = llm or LLMClient()
+        self._store_for = store_for
+        self._retrievers: dict = {}
         self._sessions: "OrderedDict[str, ChatMemory]" = OrderedDict()
         self._lock = threading.Lock()
 
@@ -64,15 +72,35 @@ class ChatEngine:
         with self._lock:
             self._sessions.pop(session_id, None)
 
+    def _retriever(self, repo_id: Optional[str]) -> Retriever:
+        if not repo_id or repo_id == "default" or self._store_for is None:
+            return self.retriever
+        with self._lock:
+            retriever = self._retrievers.get(repo_id)
+            if retriever is None:
+                # One embedder for all repositories; each store reloads
+                # itself when its repository is re-indexed.
+                retriever = Retriever(embedder=self.retriever.embedder,
+                                      store=self._store_for(repo_id))
+                self._retrievers[repo_id] = retriever
+            return retriever
+
+    def forget_repo(self, repo_id: str) -> None:
+        with self._lock:
+            self._retrievers.pop(repo_id, None)
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
-    def ask(self, query: str, session_id: Optional[str] = None) -> ChatResponse:
-        return self.ask_with_filters(RAGQuery(query=query), session_id=session_id)
+    def ask(self, query: str, session_id: Optional[str] = None,
+            repo_id: Optional[str] = None) -> ChatResponse:
+        return self.ask_with_filters(RAGQuery(query=query), session_id=session_id,
+                                     repo_id=repo_id)
 
     def ask_with_filters(self, rag_query: RAGQuery,
-                         session_id: Optional[str] = None) -> ChatResponse:
+                         session_id: Optional[str] = None,
+                         repo_id: Optional[str] = None) -> ChatResponse:
         """
         Retrieval is always attempted; the system prompt tells the model to
         handle greetings and off-topic chat without forcing repo context.
@@ -81,7 +109,7 @@ class ChatEngine:
         memory = self._memory(session_id)
 
         documents = [
-            d for d in self.retriever.retrieve_with_query(rag_query).documents
+            d for d in self._retriever(repo_id).retrieve_with_query(rag_query).documents
             if d.content and "no changes" not in d.content.lower()
         ]
 

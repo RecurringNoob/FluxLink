@@ -119,6 +119,24 @@ A finding is EXISTING when the same issue (same check, severity and nets) is on 
 
 The `/chat` route opens FluxLink Chat — a full-page conversational UI backed by the RAG API.
 
+### Repositories: local or GitHub
+
+The **Repositories** panel in the chat sidebar indexes board history in two modes:
+
+| Mode | You enter | How it reads history |
+|---|---|---|
+| **GitHub** | `owner/repo` or a GitHub URL, optionally a branch/tag | GitHub API + raw file downloads — nothing is cloned |
+| **Local folder** | the path of a git clone on the machine running the chat API | local `git`; also indexes the repo's text files |
+
+Click **Index repository**; indexing runs in the background with live progress, and
+the chat is enabled when it finishes. Each repository has its own index — switch
+between them in the panel (switching starts a new conversation), **↻** picks up new
+commits, **×** removes a repository and its index. An index built with the
+command-line ingester appears as *Command-line index*.
+
+When the chat API is reachable by other people, set `FLUXLINK_ALLOW_LOCAL_REPOS=0`
+so the browser cannot make it read folders on your machine.
+
 Ask questions like:
 
 - *"What changed in the last commit?"*
@@ -140,7 +158,23 @@ Returns: { "answer": "...",
 ```
 
 Send the returned `session_id` with the next request to continue the conversation;
-omit it to start a new one. `DELETE /chat/session/{session_id}` forgets a conversation.
+omit it to start a new one. Add `"repo_id"` (from `GET /repos`) to ask about a
+specific repository; without it the command-line index is used.
+
+#### Repositories
+
+```
+GET    /repos                  → { "repos": [...], "allow_local": true, "busy": false }
+POST   /repos                  { "kind": "github", "location": "esp-rs/esp-rust-board", "ref": "" }
+                               { "kind": "local",  "location": "D:\\boards\\my-board" }
+                               → 202, the repo with "status": "indexing"
+GET    /repos/{id}             → poll until "status" is "ready" (or "error", with "message")
+POST   /repos/{id}/reindex     → pick up new commits
+DELETE /repos/{id}             → remove the repository and its index
+```
+
+One repository is indexed at a time (`409` while busy). Indexes live under
+`rag_db/repos/<id>/`, listed in `rag_db/repos.json`. `DELETE /chat/session/{session_id}` forgets a conversation.
 If the LLM call fails the API returns HTTP 502 with the error in `detail`.
 The server starts without `OPENAI_API_KEY`; until the key is set, chat requests
 and `/health` return HTTP 503 with the reason in `detail`.
@@ -290,6 +324,7 @@ Groups components by `(value, footprint)`, queries the ERP adapter, and reports 
 | `FLUXDIFF_REPO_PATH` | current directory | Path to the KiCad git repository |
 | `FLUXDIFF_GITHUB_REPO` | *(unset)* | `owner/repo` to ingest from GitHub without cloning (same as `--github`) |
 | `GITHUB_TOKEN` | *(unset)* | GitHub token for private repositories or a higher API limit |
+| `FLUXLINK_ALLOW_LOCAL_REPOS` | `1` | `0` stops the chat UI from indexing local folders (set it when the API is shared) |
 | `OPENAI_API_KEY` | *(required)* | OpenAI API key |
 | `FLUXDIFF_EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model |
 | `FLUXDIFF_LLM_MODEL` | `gpt-4o-mini` | Chat completion model |

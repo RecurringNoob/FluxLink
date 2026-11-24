@@ -1,8 +1,28 @@
 import { useState, useRef, useEffect } from "react";
 import type { JSX } from "react";
 import "./chat.css";
+import { RepoPanel } from "./RepoPanel";
+import { useRepos } from "./repos";
+import type { RepoKind } from "./repos";
 
 const API_URL: string = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
+const ACTIVE_REPO_KEY = "fluxlink.activeRepo";
+
+function loadActiveRepo(): string | null {
+  try {
+    return window.localStorage.getItem(ACTIVE_REPO_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function saveActiveRepo(id: string): void {
+  try {
+    window.localStorage.setItem(ACTIVE_REPO_KEY, id);
+  } catch {
+    // Storage can be unavailable (private mode); the choice just isn't remembered.
+  }
+}
 
 // ─── Icons ────────────────────────────────────────────────────────────────────
 
@@ -219,6 +239,14 @@ export function ChatApp(): JSX.Element {
   const [isStopped, setIsStopped] = useState(false);
   // Server-side conversation memory is keyed by this id (see rag/api.py).
   const [sessionId, setSessionId] = useState<string | null>(null);
+  // Repository the chat answers about (see rag/repos.py).
+  const { repos, loaded, allowLocal, loadError, add, reindex, remove } = useRepos(API_URL);
+  const [activeRepoId, setActiveRepoId] = useState<string | null>(loadActiveRepo);
+  const activeRepo =
+    repos.find((r) => r.id === activeRepoId) ??
+    repos.find((r) => r.status === "ready") ??
+    null;
+  const repoReady = !activeRepo || activeRepo.status === "ready";
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -261,8 +289,20 @@ export function ChatApp(): JSX.Element {
     ]);
   };
 
+  const handleSelectRepo = (id: string) => {
+    saveActiveRepo(id);
+    if (id === activeRepo?.id) return;
+    setActiveRepoId(id);
+    handleClearChat();   // answers about different boards should not mix
+  };
+
+  const handleAddRepo = async (kind: RepoKind, location: string, ref: string) => {
+    const repo = await add(kind, location, ref);
+    handleSelectRepo(repo.id);
+  };
+
   const handleSend = async () => {
-    if (!inputValue.trim() || isTyping || isAnimating) return;
+    if (!inputValue.trim() || isTyping || isAnimating || !repoReady) return;
 
     const query = inputValue.trim();
     setIsStopped(false);
@@ -287,7 +327,7 @@ export function ChatApp(): JSX.Element {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         signal: controller.signal,
-        body: JSON.stringify({ query, session_id: sessionId }),
+        body: JSON.stringify({ query, session_id: sessionId, repo_id: activeRepo?.id ?? null }),
       });
 
       const data = await response.json().catch(() => ({})) as ChatApiResponse;
@@ -395,19 +435,23 @@ export function ChatApp(): JSX.Element {
         </div>
 
         <div className="flex-1 overflow-y-auto px-3 py-2">
-          <p className="text-xs font-semibold text-zinc-500 mb-2 mt-4 px-2 tracking-wide">Today</p>
-          <div className="space-y-0.5">
-            <button className="w-full text-left flex items-center gap-3 px-3 py-2.5 rounded-lg bg-zinc-800 text-sm font-medium text-zinc-200">
-              <MessageSquareIcon className="h-4 w-4 shrink-0 text-zinc-400" />
-              <span className="truncate">Current Conversation</span>
-            </button>
-          </div>
+          <RepoPanel
+            repos={repos}
+            loaded={loaded}
+            allowLocal={allowLocal}
+            loadError={loadError}
+            activeRepoId={activeRepo?.id ?? null}
+            onSelect={handleSelectRepo}
+            onAdd={handleAddRepo}
+            onReindex={reindex}
+            onRemove={remove}
+          />
         </div>
 
         <div className="p-3 mt-auto border-t border-white/10">
           <a
             href="/"
-            className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-white/5 text-sm text-zinc-400 hover:text-zinc-200 transition-colors"
+            className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-white/5 text-sm text-zinc-400 hover:text-zinc-200 transition-colors no-underline"
           >
             <MessageSquareIcon className="h-4 w-4" />
             Back to board viewer
@@ -429,6 +473,12 @@ export function ChatApp(): JSX.Element {
               <MenuIcon className="h-5 w-5" />
             </button>
             <h2 className="md:hidden font-medium text-zinc-800 dark:text-zinc-200 text-sm">FluxLink</h2>
+            {activeRepo && (
+              <span className="hidden md:inline text-sm text-zinc-500 dark:text-zinc-400 truncate">
+                Chatting about{" "}
+                <span className="font-medium text-zinc-800 dark:text-zinc-200">{activeRepo.label}</span>
+              </span>
+            )}
           </div>
 
           <div className="flex flex-1 justify-end items-center gap-2">
@@ -526,7 +576,12 @@ export function ChatApp(): JSX.Element {
                 value={inputValue}
                 onChange={(e) => setInputValue(e.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder="Message FluxLink..."
+                placeholder={
+                  repoReady
+                    ? `Ask about ${activeRepo ? activeRepo.label : "your board history"}…`
+                    : `${activeRepo?.label ?? "Repository"} is still being indexed…`
+                }
+                disabled={!repoReady}
                 className="max-h-[200px] min-h-[50px] sm:min-h-[56px] w-full resize-none bg-transparent py-3 sm:py-4 pl-4 sm:pl-5 pr-12 sm:pr-14 text-[16px] sm:text-[15px] leading-relaxed text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-500 dark:placeholder:text-zinc-400 focus:outline-none"
                 rows={1}
               />
@@ -534,9 +589,9 @@ export function ChatApp(): JSX.Element {
                 {(!isTyping && !isAnimating) ? (
                   <button
                     onClick={() => void handleSend()}
-                    disabled={!inputValue.trim()}
+                    disabled={!inputValue.trim() || !repoReady}
                     className={`flex h-8 w-8 sm:h-10 sm:w-10 items-center justify-center rounded-lg sm:rounded-xl transition-all duration-300 ${
-                      inputValue.trim()
+                      inputValue.trim() && repoReady
                         ? "bg-zinc-900 text-white hover:bg-zinc-800 dark:bg-white dark:text-black dark:hover:bg-zinc-200 active:scale-95"
                         : "bg-transparent text-zinc-400 dark:text-zinc-600 cursor-not-allowed"
                     }`}
